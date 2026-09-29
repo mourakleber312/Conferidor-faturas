@@ -17,14 +17,24 @@ jobs:
           channel: stable
           cache: true
 
+      - name: Instalar Android SDK 36
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+          "platforms;android-36" \
+          "build-tools;36.0.0"
+
       - name: Criar projeto Flutter Android
         run: |
-          mkdir temp
-          cd temp
-          flutter create --platforms=android --org br.com.conferidorfaturas conferidor_faturas
-          cp -r conferidor_faturas/android ../android
+          flutter create \
+            --platforms=android \
+            --org br.com.conferidorfaturas \
+            .
 
-      - name: Dependencias
+      - name: Configurar compileSdk 36
+        run: |
+          sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 36/' android/app/build.gradle.kts
+
+      - name: Baixar dependencias
         run: flutter pub get
 
       - name: Gerar APK
@@ -35,3 +45,4 @@ jobs:
         with:
           name: ConferidorFaturas-APK
           path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
