@@ -2,7 +2,7 @@ name: conferidor_faturas
 description: Conferidor de faturas de cartão
 publish_to: "none"
 
-version: 1.0.0+1
+version: 2.0.0+2
 
 environment:
   sdk: ">=3.3.0 <4.0.0"
@@ -11,10 +11,8 @@ dependencies:
   flutter:
     sdk: flutter
 
-  syncfusion_flutter_pdf: ^28.1.33
-  syncfusion_flutter_xlsio: ^28.1.33
-  path_provider: ^2.1.5
-  share_plus: ^10.1.4
+  file_picker: ^10.3.3
+  syncfusion_flutter_pdf: ^31.1.23
 
 dev_dependencies:
   flutter_test:
