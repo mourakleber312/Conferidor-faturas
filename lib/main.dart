@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:file_picker/file_picker.dart';
 
 void main() {
   runApp(const ConferidorApp());
@@ -22,28 +21,8 @@ class ConferidorApp extends StatelessWidget {
   }
 }
 
-class HomePage extends StatefulWidget {
+class HomePage extends StatelessWidget {
   const HomePage({super.key});
-
-  @override
-  State<HomePage> createState() => _HomePageState();
-}
-
-class _HomePageState extends State<HomePage> {
-  String? arquivoSelecionado;
-
-  Future<void> selecionarFatura() async {
-    final resultado = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: ['pdf'],
-    );
-
-    if (resultado != null) {
-      setState(() {
-        arquivoSelecionado = resultado.files.single.name;
-      });
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -51,57 +30,37 @@ class _HomePageState extends State<HomePage> {
       appBar: AppBar(
         title: const Text('Conferidor de Faturas'),
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(
-              Icons.credit_card,
-              size: 80,
-            ),
-            const SizedBox(height: 24),
-
-            Text(
-              'Conferidor de Faturas',
-              style: Theme.of(context).textTheme.headlineSmall,
-            ),
-
-            const SizedBox(height: 12),
-
-            const Text(
-              'Importe sua fatura de cartão em PDF para iniciar a conferência.',
-              textAlign: TextAlign.center,
-            ),
-
-            const SizedBox(height: 32),
-
-            FilledButton.icon(
-              onPressed: selecionarFatura,
-              icon: const Icon(Icons.picture_as_pdf),
-              label: const Text('Selecionar fatura PDF'),
-            ),
-
-            const SizedBox(height: 24),
-
-            if (arquivoSelecionado != null)
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.check_circle),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Text(
-                          'Arquivo selecionado:\n$arquivoSelecionado',
-                        ),
-                      ),
-                    ],
-                  ),
+      body: const Center(
+        child: Padding(
+          padding: EdgeInsets.all(24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                Icons.credit_card,
+                size: 90,
+              ),
+              SizedBox(height: 24),
+              Text(
+                'Conferidor de Faturas',
+                style: TextStyle(
+                  fontSize: 26,
+                  fontWeight: FontWeight.bold,
                 ),
               ),
-          ],
+              SizedBox(height: 16),
+              Text(
+                'Aplicativo instalado com sucesso!',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 18),
+              ),
+              SizedBox(height: 8),
+              Text(
+                'Versão inicial para processamento de faturas Itaú.',
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
         ),
       ),
     );
