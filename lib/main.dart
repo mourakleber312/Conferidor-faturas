@@ -3,7 +3,6 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart';
-
 import 'package:excel/excel.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
@@ -76,6 +75,16 @@ class ResultadoFatura {
     if (diferenca == null) return false;
     return diferenca!.abs() < 0.01;
   }
+}
+
+class FaturaProcessada {
+  final String arquivo;
+  final ResultadoFatura resultado;
+
+  FaturaProcessada({
+    required this.arquivo,
+    required this.resultado,
+  });
 }
 
 // ============================================================
@@ -151,7 +160,7 @@ class ParserItau {
   }
 
   // ==========================================================
-  // COMPRAS E SAQUES
+  // COMPRAS
   // ==========================================================
 
   static List<Lancamento> lerCompras(String texto) {
@@ -213,13 +222,11 @@ class ParserItau {
 
       var descricao = match.group(2) ?? '';
 
-      final parcelaAtual = int.tryParse(
-        match.group(3) ?? '',
-      );
+      final parcelaAtual =
+          int.tryParse(match.group(3) ?? '');
 
-      final totalParcelas = int.tryParse(
-        match.group(4) ?? '',
-      );
+      final totalParcelas =
+          int.tryParse(match.group(4) ?? '');
 
       final valorTexto = match.group(5);
       final categoriaTexto = match.group(6);
@@ -238,35 +245,26 @@ class ParserItau {
       ).firstMatch(descricao);
 
       if (parcelaNaDescricao != null) {
-        parcelaFinal = int.tryParse(
-          parcelaNaDescricao.group(1)!,
-        );
+        parcelaFinal =
+            int.tryParse(parcelaNaDescricao.group(1)!);
 
-        totalParcelasFinal = int.tryParse(
-          parcelaNaDescricao.group(2)!,
-        );
+        totalParcelasFinal =
+            int.tryParse(parcelaNaDescricao.group(2)!);
 
         descricao = descricao
             .substring(0, parcelaNaDescricao.start)
             .trim();
       }
 
-      if (descricao.isEmpty) {
-        continue;
-      }
-
-      final valor = moedaParaDouble(valorTexto);
-
-      final categoria = normalizarCategoria(
-        categoriaTexto,
-      );
+      if (descricao.isEmpty) continue;
 
       resultado.add(
         Lancamento(
           data: data,
           descricao: descricao,
-          categoria: categoria,
-          valor: valor,
+          categoria:
+              normalizarCategoria(categoriaTexto),
+          valor: moedaParaDouble(valorTexto),
           parcelaAtual: parcelaFinal,
           totalParcelas: totalParcelasFinal,
           tipo: parcelaFinal != null &&
@@ -320,9 +318,8 @@ class ParserItau {
     String data = '';
     String descricao = 'Compra internacional';
 
-    final dataMatch = RegExp(
-      r'(\d{2}/\d{2})',
-    ).firstMatch(secao);
+    final dataMatch =
+        RegExp(r'(\d{2}/\d{2})').firstMatch(secao);
 
     if (dataMatch != null) {
       data = dataMatch.group(1) ?? '';
@@ -339,21 +336,15 @@ class ParserItau {
 
     if (descricaoMatch != null) {
       var encontrada =
-          descricaoMatch.group(1) ?? '';
-
-      encontrada = limparEspacos(encontrada);
+          limparEspacos(descricaoMatch.group(1) ?? '');
 
       if (encontrada.endsWith('S')) {
-        encontrada = encontrada.substring(
-          0,
-          encontrada.length - 1,
-        );
+        encontrada =
+            encontrada.substring(0, encontrada.length - 1);
       }
 
-      encontrada = encontrada.trim();
-
-      if (encontrada.isNotEmpty) {
-        descricao = encontrada;
+      if (encontrada.trim().isNotEmpty) {
+        descricao = encontrada.trim();
       }
     }
 
@@ -429,9 +420,8 @@ class ParserItau {
         .replaceAll('\r', '')
         .replaceAll('\n', '');
 
-    final datas = RegExp(
-      r'\d{2}/\d{2}',
-    ).allMatches(secao).toList();
+    final datas =
+        RegExp(r'\d{2}/\d{2}').allMatches(secao).toList();
 
     for (int i = 0; i < datas.length; i++) {
       final atual = datas[i];
@@ -442,10 +432,8 @@ class ParserItau {
           ? datas[i + 1].start
           : secao.length;
 
-      var bloco = secao.substring(
-        inicioBloco,
-        fimBloco,
-      );
+      var bloco =
+          secao.substring(inicioBloco, fimBloco);
 
       final data = bloco.substring(0, 5);
 
@@ -455,14 +443,10 @@ class ParserItau {
         r'(-?[\d\.]+,\d{2})',
       ).firstMatch(bloco);
 
-      if (valorMatch == null) {
-        continue;
-      }
+      if (valorMatch == null) continue;
 
-      var descricao = bloco.substring(
-        0,
-        valorMatch.start,
-      );
+      var descricao =
+          bloco.substring(0, valorMatch.start);
 
       descricao = limparEspacos(descricao);
 
@@ -470,16 +454,14 @@ class ParserItau {
         descricao = 'Produto/serviço Itaú';
       }
 
-      final valor = moedaParaDouble(
-        valorMatch.group(1)!,
-      );
-
       resultado.add(
         Lancamento(
           data: data,
           descricao: descricao,
           categoria: 'produtos e serviços',
-          valor: valor,
+          valor: moedaParaDouble(
+            valorMatch.group(1)!,
+          ),
           tipo: 'Produto/Serviço',
         ),
       );
@@ -489,7 +471,7 @@ class ParserItau {
   }
 
   // ==========================================================
-  // PROCESSAMENTO COMPLETO
+  // PROCESSAMENTO
   // ==========================================================
 
   static ResultadoFatura processar(
@@ -502,8 +484,7 @@ class ParserItau {
     final totalFatura = procurarValor(
       texto,
       RegExp(
-        r'Total desta fatura'
-        r'([\d\.]+,\d{2})',
+        r'Total desta fatura([\d\.]+,\d{2})',
         caseSensitive: false,
       ),
     );
@@ -511,8 +492,7 @@ class ParserItau {
     final totalCartao = procurarValor(
       texto,
       RegExp(
-        r'Lançamentos no cartão'
-        r'([\d\.]+,\d{2})',
+        r'Lançamentos no cartão([\d\.]+,\d{2})',
         caseSensitive: false,
       ),
     );
@@ -537,17 +517,9 @@ class ParserItau {
 
     final lancamentos = <Lancamento>[];
 
-    lancamentos.addAll(
-      lerCompras(texto),
-    );
-
-    lancamentos.addAll(
-      lerInternacional(texto),
-    );
-
-    lancamentos.addAll(
-      lerProdutosServicos(texto),
-    );
+    lancamentos.addAll(lerCompras(texto));
+    lancamentos.addAll(lerInternacional(texto));
+    lancamentos.addAll(lerProdutosServicos(texto));
 
     return ResultadoFatura(
       totalFatura: totalFatura,
@@ -561,7 +533,7 @@ class ParserItau {
 }
 
 // ============================================================
-// APLICATIVO
+// APP
 // ============================================================
 
 class ConferidorApp extends StatelessWidget {
@@ -581,12 +553,15 @@ class ConferidorApp extends StatelessWidget {
   }
 }
 
+// ============================================================
+// TELA PRINCIPAL
+// ============================================================
+
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
   @override
-  State<HomePage> createState() =>
-      _HomePageState();
+  State<HomePage> createState() => _HomePageState();
 }
 
 class _HomePageState extends State<HomePage> {
@@ -594,82 +569,122 @@ class _HomePageState extends State<HomePage> {
   bool gerandoExcel = false;
 
   String status =
-      'Selecione uma fatura Itaú em PDF.';
+      'Selecione uma ou mais faturas Itaú em PDF.';
 
-  String? nomeArquivo;
+  final List<FaturaProcessada> faturas = [];
 
-  ResultadoFatura? resultado;
+  int get quantidadeConciliadas => faturas
+      .where((f) => f.resultado.conciliada)
+      .length;
+
+  int get quantidadeDivergentes =>
+      faturas.length - quantidadeConciliadas;
+
+  int get totalLancamentos => faturas.fold(
+        0,
+        (total, f) =>
+            total + f.resultado.lancamentos.length,
+      );
+
+  int get totalParceladas => faturas.fold(
+        0,
+        (total, f) =>
+            total + f.resultado.quantidadeParceladas,
+      );
+
+  double get valorTotalFaturas => faturas.fold(
+        0.0,
+        (total, f) =>
+            total + (f.resultado.totalFatura ?? 0),
+      );
+
+  double get somaTotalLancamentos => faturas.fold(
+        0.0,
+        (total, f) => total + f.resultado.soma,
+      );
+
+  double get diferencaTotal =>
+      valorTotalFaturas - somaTotalLancamentos;
+
+  bool get todasConciliadas =>
+      faturas.isNotEmpty &&
+      faturas.every((f) => f.resultado.conciliada);
 
   // ==========================================================
-  // SELECIONAR PDF
+  // SELECIONAR VÁRIOS PDFs
   // ==========================================================
 
-  Future<void> selecionarFatura() async {
+  Future<void> selecionarFaturas() async {
     try {
-      setState(() {
-        processando = true;
-        resultado = null;
-        nomeArquivo = null;
-        status = 'Selecionando fatura...';
-      });
-
       final escolha =
           await FilePicker.platform.pickFiles(
         type: FileType.custom,
         allowedExtensions: ['pdf'],
+        allowMultiple: true,
       );
 
-      if (escolha == null) {
-        setState(() {
-          processando = false;
-          status = 'Seleção cancelada.';
-        });
+      if (escolha == null || escolha.files.isEmpty) {
         return;
       }
 
-      final arquivo = escolha.files.single;
-
-      if (arquivo.path == null) {
-        throw Exception(
-          'Não foi possível acessar o PDF.',
-        );
-      }
-
       setState(() {
-        nomeArquivo = arquivo.name;
-        status = 'Lendo e conferindo a fatura...';
+        processando = true;
+        faturas.clear();
+        status =
+            'Processando ${escolha.files.length} fatura(s)...';
       });
 
-      final bytes =
-          await File(arquivo.path!).readAsBytes();
+      for (int i = 0; i < escolha.files.length; i++) {
+        final arquivo = escolha.files[i];
 
-      final documento =
-          PdfDocument(inputBytes: bytes);
+        if (arquivo.path == null) continue;
 
-      final texto =
-          PdfTextExtractor(documento).extractText();
+        setState(() {
+          status =
+              'Processando ${i + 1} de '
+              '${escolha.files.length}:\n'
+              '${arquivo.name}';
+        });
 
-      documento.dispose();
+        final bytes =
+            await File(arquivo.path!).readAsBytes();
 
-      if (texto.trim().isEmpty) {
-        throw Exception(
-          'Não foi possível extrair texto do PDF.',
+        final documento =
+            PdfDocument(inputBytes: bytes);
+
+        final texto =
+            PdfTextExtractor(documento).extractText();
+
+        documento.dispose();
+
+        if (texto.trim().isEmpty) continue;
+
+        final resultado =
+            ParserItau.processar(texto);
+
+        faturas.add(
+          FaturaProcessada(
+            arquivo: arquivo.name,
+            resultado: resultado,
+          ),
         );
       }
 
-      final analise =
-          ParserItau.processar(texto);
-
       setState(() {
-        resultado = analise;
         processando = false;
 
-        if (analise.conciliada) {
-          status = 'Fatura processada e conferida.';
+        if (faturas.isEmpty) {
+          status =
+              'Nenhuma fatura pôde ser processada.';
+        } else if (todasConciliadas) {
+          status =
+              '${faturas.length} fatura(s) '
+              'processada(s) e conferida(s).';
         } else {
           status =
-              'Fatura processada. Ainda existe '
-              'diferença na conferência.';
+              '${faturas.length} fatura(s) processada(s). '
+              '$quantidadeDivergentes '
+              'fatura(s) com divergência.';
         }
       });
     } catch (e) {
@@ -681,22 +696,18 @@ class _HomePageState extends State<HomePage> {
   }
 
   // ==========================================================
-  // EXPORTAR EXCEL
+  // GERAR EXCEL CONSOLIDADO
   // ==========================================================
 
-  Future<void> gerarExcel() async {
-    final r = resultado;
+  Future<void> gerarExcelConsolidado() async {
+    if (faturas.isEmpty) return;
 
-    if (r == null) {
-      return;
-    }
-
-    if (!r.conciliada) {
+    if (!todasConciliadas) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text(
-            'O Excel só pode ser gerado '
-            'quando a fatura estiver conciliada.',
+            'Todas as faturas precisam estar '
+            'conciliadas antes da exportação.',
           ),
         ),
       );
@@ -711,209 +722,181 @@ class _HomePageState extends State<HomePage> {
       final excel = Excel.createExcel();
 
       // ------------------------------------------------------
-      // ABA LANÇAMENTOS
+      // LANÇAMENTOS
       // ------------------------------------------------------
 
       final lancamentos = excel['Lançamentos'];
 
       lancamentos.appendRow([
+        TextCellValue('Fatura / Arquivo'),
         TextCellValue('Data da compra'),
         TextCellValue('Descrição da compra'),
         TextCellValue('Categoria'),
         TextCellValue('Valor'),
         TextCellValue('Parcela atual'),
-        TextCellValue('Quantidade total de parcelas'),
+        TextCellValue('Total de parcelas'),
         TextCellValue('Tipo'),
         TextCellValue('Observações'),
       ]);
 
-      for (final item in r.lancamentos) {
-        lancamentos.appendRow([
-          TextCellValue(item.data),
-          TextCellValue(item.descricao),
-          TextCellValue(item.categoria),
-          DoubleCellValue(item.valor),
-          item.parcelaAtual == null
-              ? TextCellValue('')
-              : IntCellValue(item.parcelaAtual!),
-          item.totalParcelas == null
-              ? TextCellValue('')
-              : IntCellValue(item.totalParcelas!),
-          TextCellValue(item.tipo),
-          TextCellValue(item.observacoes),
-        ]);
+      for (final fatura in faturas) {
+        for (final item
+            in fatura.resultado.lancamentos) {
+          lancamentos.appendRow([
+            TextCellValue(fatura.arquivo),
+            TextCellValue(item.data),
+            TextCellValue(item.descricao),
+            TextCellValue(item.categoria),
+            DoubleCellValue(item.valor),
+            item.parcelaAtual == null
+                ? TextCellValue('')
+                : IntCellValue(item.parcelaAtual!),
+            item.totalParcelas == null
+                ? TextCellValue('')
+                : IntCellValue(item.totalParcelas!),
+            TextCellValue(item.tipo),
+            TextCellValue(item.observacoes),
+          ]);
+        }
       }
 
-      // Linha em branco.
       lancamentos.appendRow([
         TextCellValue(''),
         TextCellValue(''),
+        TextCellValue('TOTAL CONSOLIDADO'),
         TextCellValue(''),
-        TextCellValue(''),
+        DoubleCellValue(somaTotalLancamentos),
         TextCellValue(''),
         TextCellValue(''),
         TextCellValue(''),
         TextCellValue(''),
       ]);
 
-      // Totalizador.
-      lancamentos.appendRow([
-        TextCellValue(''),
-        TextCellValue('TOTAL'),
-        TextCellValue(''),
-        DoubleCellValue(r.soma),
-        TextCellValue(''),
-        TextCellValue(''),
-        TextCellValue(''),
-        TextCellValue(''),
-      ]);
-
-      // Larguras.
-      lancamentos.setColumnWidth(0, 14);
-      lancamentos.setColumnWidth(1, 40);
-      lancamentos.setColumnWidth(2, 22);
-      lancamentos.setColumnWidth(3, 16);
-      lancamentos.setColumnWidth(4, 15);
-      lancamentos.setColumnWidth(5, 25);
+      lancamentos.setColumnWidth(0, 35);
+      lancamentos.setColumnWidth(1, 15);
+      lancamentos.setColumnWidth(2, 40);
+      lancamentos.setColumnWidth(3, 22);
+      lancamentos.setColumnWidth(4, 16);
+      lancamentos.setColumnWidth(5, 15);
       lancamentos.setColumnWidth(6, 20);
-      lancamentos.setColumnWidth(7, 35);
+      lancamentos.setColumnWidth(7, 20);
+      lancamentos.setColumnWidth(8, 35);
 
       // ------------------------------------------------------
-      // ABA CONFERÊNCIA
+      // CONFERÊNCIA
       // ------------------------------------------------------
 
       final conferencia = excel['Conferência'];
 
       conferencia.appendRow([
-        TextCellValue('CONFERÊNCIA DA FATURA'),
-        TextCellValue(''),
-      ]);
-
-      conferencia.appendRow([
         TextCellValue('Arquivo'),
-        TextCellValue(nomeArquivo ?? ''),
-      ]);
-
-      conferencia.appendRow([
         TextCellValue('Total da fatura'),
-        DoubleCellValue(r.totalFatura ?? 0),
-      ]);
-
-      conferencia.appendRow([
         TextCellValue('Soma dos lançamentos'),
-        DoubleCellValue(r.soma),
-      ]);
-
-      conferencia.appendRow([
         TextCellValue('Diferença'),
-        DoubleCellValue(r.diferenca ?? 0),
-      ]);
-
-      conferencia.appendRow([
-        TextCellValue('Quantidade de lançamentos'),
-        IntCellValue(r.lancamentos.length),
-      ]);
-
-      conferencia.appendRow([
-        TextCellValue('Compras parceladas'),
-        IntCellValue(r.quantidadeParceladas),
-      ]);
-
-      conferencia.appendRow([
-        TextCellValue('Lançamentos no cartão - Itaú'),
-        DoubleCellValue(
-          r.totalCartaoInformado ?? 0,
-        ),
-      ]);
-
-      conferencia.appendRow([
-        TextCellValue(
-          'Lançamentos internacionais - Itaú',
-        ),
-        DoubleCellValue(
-          r.totalInternacionalInformado ?? 0,
-        ),
-      ]);
-
-      conferencia.appendRow([
-        TextCellValue(
-          'Produtos e serviços - Itaú',
-        ),
-        DoubleCellValue(
-          r.totalServicosInformado ?? 0,
-        ),
-      ]);
-
-      conferencia.appendRow([
+        TextCellValue('Lançamentos'),
+        TextCellValue('Parceladas'),
+        TextCellValue('Cartão Itaú'),
+        TextCellValue('Internacional'),
+        TextCellValue('Produtos/serviços'),
         TextCellValue('Status'),
+      ]);
+
+      for (final fatura in faturas) {
+        final r = fatura.resultado;
+
+        conferencia.appendRow([
+          TextCellValue(fatura.arquivo),
+          DoubleCellValue(r.totalFatura ?? 0),
+          DoubleCellValue(r.soma),
+          DoubleCellValue(r.diferenca ?? 0),
+          IntCellValue(r.lancamentos.length),
+          IntCellValue(r.quantidadeParceladas),
+          DoubleCellValue(
+            r.totalCartaoInformado ?? 0,
+          ),
+          DoubleCellValue(
+            r.totalInternacionalInformado ?? 0,
+          ),
+          DoubleCellValue(
+            r.totalServicosInformado ?? 0,
+          ),
+          TextCellValue(
+            r.conciliada
+                ? 'CONCILIADA'
+                : 'DIVERGENTE',
+          ),
+        ]);
+      }
+
+      conferencia.appendRow([
+        TextCellValue('TOTAL CONSOLIDADO'),
+        DoubleCellValue(valorTotalFaturas),
+        DoubleCellValue(somaTotalLancamentos),
+        DoubleCellValue(diferencaTotal),
+        IntCellValue(totalLancamentos),
+        IntCellValue(totalParceladas),
+        TextCellValue(''),
+        TextCellValue(''),
+        TextCellValue(''),
         TextCellValue(
-          r.conciliada
-              ? 'CONCILIADA'
+          todasConciliadas
+              ? 'CONCILIADO'
               : 'DIVERGENTE',
         ),
       ]);
 
-      conferencia.setColumnWidth(0, 38);
-      conferencia.setColumnWidth(1, 30);
+      conferencia.setColumnWidth(0, 35);
+      conferencia.setColumnWidth(1, 20);
+      conferencia.setColumnWidth(2, 22);
+      conferencia.setColumnWidth(3, 18);
+      conferencia.setColumnWidth(4, 16);
+      conferencia.setColumnWidth(5, 16);
+      conferencia.setColumnWidth(6, 18);
+      conferencia.setColumnWidth(7, 18);
+      conferencia.setColumnWidth(8, 22);
+      conferencia.setColumnWidth(9, 18);
 
       // ------------------------------------------------------
-      // ABA DIVERGÊNCIAS
-      // Só existe se houver diferença.
+      // DIVERGÊNCIAS
       // ------------------------------------------------------
 
-      if (!r.conciliada) {
-        final divergencias =
-            excel['Divergências'];
+      if (!todasConciliadas) {
+        final divergencias = excel['Divergências'];
 
         divergencias.appendRow([
-          TextCellValue('Item'),
-          TextCellValue('Valor'),
+          TextCellValue('Arquivo'),
+          TextCellValue('Total da fatura'),
+          TextCellValue('Soma'),
+          TextCellValue('Diferença'),
           TextCellValue('Observação'),
         ]);
 
-        divergencias.appendRow([
-          TextCellValue('Total da fatura'),
-          DoubleCellValue(
-            r.totalFatura ?? 0,
-          ),
-          TextCellValue(
-            'Valor informado pelo Itaú',
-          ),
-        ]);
+        for (final fatura in faturas) {
+          final r = fatura.resultado;
 
-        divergencias.appendRow([
-          TextCellValue(
-            'Soma dos lançamentos',
-          ),
-          DoubleCellValue(r.soma),
-          TextCellValue(
-            'Soma reconstruída pelo aplicativo',
-          ),
-        ]);
+          if (!r.conciliada) {
+            divergencias.appendRow([
+              TextCellValue(fatura.arquivo),
+              DoubleCellValue(r.totalFatura ?? 0),
+              DoubleCellValue(r.soma),
+              DoubleCellValue(r.diferenca ?? 0),
+              TextCellValue(
+                'Fatura requer revisão.',
+              ),
+            ]);
+          }
+        }
 
-        divergencias.appendRow([
-          TextCellValue('Diferença'),
-          DoubleCellValue(
-            r.diferenca ?? 0,
-          ),
-          TextCellValue(
-            'Necessário revisar a leitura',
-          ),
-        ]);
-
-        divergencias.setColumnWidth(0, 30);
+        divergencias.setColumnWidth(0, 35);
         divergencias.setColumnWidth(1, 20);
-        divergencias.setColumnWidth(2, 45);
+        divergencias.setColumnWidth(2, 20);
+        divergencias.setColumnWidth(3, 20);
+        divergencias.setColumnWidth(4, 35);
       }
 
-      // Remove a aba padrão criada pela biblioteca.
       if (excel.tables.containsKey('Sheet1')) {
         excel.delete('Sheet1');
       }
-
-      // ------------------------------------------------------
-      // SALVAR
-      // ------------------------------------------------------
 
       final bytes = excel.encode();
 
@@ -923,32 +906,21 @@ class _HomePageState extends State<HomePage> {
         );
       }
 
-      final pasta =
-          await getTemporaryDirectory();
+      final pasta = await getTemporaryDirectory();
 
-      var nomeBase =
-          nomeArquivo ?? 'fatura_itau';
+      final agora = DateTime.now();
 
-      nomeBase = nomeBase
-          .replaceAll(
-            RegExp(
-              r'\.pdf$',
-              caseSensitive: false,
-            ),
-            '',
-          )
-          .replaceAll(
-            RegExp(r'[^a-zA-Z0-9_\-]'),
-            '_',
-          );
+      final nome =
+          'Faturas_Itau_'
+          '${agora.year}'
+          '${agora.month.toString().padLeft(2, '0')}'
+          '${agora.day.toString().padLeft(2, '0')}'
+          '_consolidado.xlsx';
 
-      final caminho =
-          '${pasta.path}/${nomeBase}_conferida.xlsx';
+      final arquivo =
+          File('${pasta.path}/$nome');
 
-      final arquivoExcel =
-          File(caminho);
-
-      await arquivoExcel.writeAsBytes(
+      await arquivo.writeAsBytes(
         bytes,
         flush: true,
       );
@@ -962,16 +934,15 @@ class _HomePageState extends State<HomePage> {
       await Share.shareXFiles(
         [
           XFile(
-            arquivoExcel.path,
+            arquivo.path,
             mimeType:
                 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
           ),
         ],
-        subject:
-            'Fatura Itaú conferida',
+        subject: 'Faturas Itaú consolidadas',
         text:
-            'Fatura processada e conferida. '
-            'Diferença: R\$ 0,00.',
+            '${faturas.length} fatura(s) '
+            'processada(s) e conferida(s).',
       );
     } catch (e) {
       if (!mounted) return;
@@ -997,25 +968,18 @@ class _HomePageState extends State<HomePage> {
   String dinheiro(double valor) {
     final sinal = valor < 0 ? '-' : '';
 
-    final absoluto = valor.abs();
-
     final partes =
-        absoluto.toStringAsFixed(2).split('.');
+        valor.abs().toStringAsFixed(2).split('.');
 
     final inteiro = partes[0];
-
     final buffer = StringBuffer();
 
-    for (int i = 0;
-        i < inteiro.length;
-        i++) {
-      final restante =
-          inteiro.length - i;
+    for (int i = 0; i < inteiro.length; i++) {
+      final restante = inteiro.length - i;
 
       buffer.write(inteiro[i]);
 
-      if (restante > 1 &&
-          restante % 3 == 1) {
+      if (restante > 1 && restante % 3 == 1) {
         buffer.write('.');
       }
     }
@@ -1029,8 +993,7 @@ class _HomePageState extends State<HomePage> {
     String valor,
   ) {
     return Padding(
-      padding:
-          const EdgeInsets.symmetric(
+      padding: const EdgeInsets.symmetric(
         vertical: 4,
       ),
       child: Row(
@@ -1038,7 +1001,7 @@ class _HomePageState extends State<HomePage> {
           Expanded(
             child: Text(titulo),
           ),
-          const SizedBox(width: 10),
+          const SizedBox(width: 8),
           Text(
             valor,
             style: const TextStyle(
@@ -1051,13 +1014,11 @@ class _HomePageState extends State<HomePage> {
   }
 
   // ==========================================================
-  // TELA
+  // INTERFACE
   // ==========================================================
 
   @override
   Widget build(BuildContext context) {
-    final r = resultado;
-
     return Scaffold(
       appBar: AppBar(
         title: const Text(
@@ -1065,8 +1026,7 @@ class _HomePageState extends State<HomePage> {
         ),
       ),
       body: ListView(
-        padding:
-            const EdgeInsets.all(20),
+        padding: const EdgeInsets.all(20),
         children: [
           const Icon(
             Icons.credit_card,
@@ -1077,14 +1037,12 @@ class _HomePageState extends State<HomePage> {
 
           FilledButton.icon(
             onPressed:
-                processando
-                    ? null
-                    : selecionarFatura,
+                processando ? null : selecionarFaturas,
             icon: const Icon(
               Icons.picture_as_pdf,
             ),
             label: const Text(
-              'Selecionar fatura PDF',
+              'Selecionar faturas PDF',
             ),
           ),
 
@@ -1092,42 +1050,24 @@ class _HomePageState extends State<HomePage> {
 
           if (processando)
             const Center(
-              child:
-                  CircularProgressIndicator(),
+              child: CircularProgressIndicator(),
             ),
 
           Card(
             child: Padding(
-              padding:
-                  const EdgeInsets.all(16),
+              padding: const EdgeInsets.all(16),
               child: Text(status),
             ),
           ),
 
-          if (nomeArquivo != null)
-            Padding(
-              padding:
-                  const EdgeInsets.only(
-                top: 8,
-              ),
-              child: Text(
-                'Arquivo: $nomeArquivo',
-                style: const TextStyle(
-                  fontWeight:
-                      FontWeight.bold,
-                ),
-              ),
-            ),
-
-          if (r != null) ...[
-            const SizedBox(height: 24),
+          if (faturas.isNotEmpty) ...[
+            const SizedBox(height: 20),
 
             const Text(
-              'Conferência',
+              'Resumo consolidado',
               style: TextStyle(
                 fontSize: 22,
-                fontWeight:
-                    FontWeight.bold,
+                fontWeight: FontWeight.bold,
               ),
             ),
 
@@ -1135,90 +1075,64 @@ class _HomePageState extends State<HomePage> {
 
             Card(
               child: Padding(
-                padding:
-                    const EdgeInsets.all(16),
+                padding: const EdgeInsets.all(16),
                 child: Column(
                   children: [
                     linhaResumo(
-                      'Total da fatura',
-                      r.totalFatura == null
-                          ? 'Não identificado'
-                          : dinheiro(
-                              r.totalFatura!,
-                            ),
+                      'Faturas processadas',
+                      '${faturas.length}',
                     ),
-
                     linhaResumo(
-                      'Soma dos lançamentos',
-                      dinheiro(r.soma),
+                      'Faturas conciliadas',
+                      '$quantidadeConciliadas',
                     ),
-
                     linhaResumo(
-                      'Diferença',
-                      r.diferenca == null
-                          ? 'Não calculada'
-                          : dinheiro(
-                              r.diferenca!,
-                            ),
-                    ),
-
-                    linhaResumo(
-                      'Lançamentos',
-                      '${r.lancamentos.length}',
-                    ),
-
-                    linhaResumo(
-                      'Compras parceladas',
-                      '${r.quantidadeParceladas}',
+                      'Faturas divergentes',
+                      '$quantidadeDivergentes',
                     ),
 
                     const Divider(),
 
-                    if (r.totalCartaoInformado != null)
-                      linhaResumo(
-                        'Cartão informado pelo Itaú',
-                        dinheiro(
-                          r.totalCartaoInformado!,
-                        ),
-                      ),
+                    linhaResumo(
+                      'Total das faturas',
+                      dinheiro(valorTotalFaturas),
+                    ),
+                    linhaResumo(
+                      'Soma dos lançamentos',
+                      dinheiro(somaTotalLancamentos),
+                    ),
+                    linhaResumo(
+                      'Diferença consolidada',
+                      dinheiro(diferencaTotal),
+                    ),
+                    linhaResumo(
+                      'Lançamentos',
+                      '$totalLancamentos',
+                    ),
+                    linhaResumo(
+                      'Compras parceladas',
+                      '$totalParceladas',
+                    ),
 
-                    if (r.totalInternacionalInformado !=
-                        null)
-                      linhaResumo(
-                        'Internacional informado',
-                        dinheiro(
-                          r.totalInternacionalInformado!,
-                        ),
-                      ),
-
-                    if (r.totalServicosInformado != null)
-                      linhaResumo(
-                        'Produtos/serviços informado',
-                        dinheiro(
-                          r.totalServicosInformado!,
-                        ),
-                      ),
-
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 10),
 
                     Row(
                       children: [
                         Icon(
-                          r.conciliada
+                          todasConciliadas
                               ? Icons.check_circle
                               : Icons.warning_amber,
-                          color: r.conciliada
+                          color: todasConciliadas
                               ? Colors.green
                               : Colors.orange,
                         ),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            r.conciliada
-                                ? 'Fatura conciliada'
-                                : 'Conferência pendente',
-                            style:
-                                const TextStyle(
+                            todasConciliadas
+                                ? 'Todas as faturas conciliadas'
+                                : 'Existem faturas divergentes',
+                            style: const TextStyle(
                               fontWeight:
                                   FontWeight.bold,
                             ),
@@ -1231,110 +1145,137 @@ class _HomePageState extends State<HomePage> {
               ),
             ),
 
-            // ================================================
-            // BOTÃO EXCEL
-            // ================================================
+            const SizedBox(height: 16),
 
-            if (r.conciliada) ...[
-              const SizedBox(height: 16),
-
-              FilledButton.icon(
-                onPressed: gerandoExcel
-                    ? null
-                    : gerarExcel,
-                icon: gerandoExcel
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child:
-                            CircularProgressIndicator(
-                          strokeWidth: 2,
-                        ),
-                      )
-                    : const Icon(
-                        Icons.table_view,
+            FilledButton.icon(
+              onPressed: todasConciliadas &&
+                      !gerandoExcel
+                  ? gerarExcelConsolidado
+                  : null,
+              icon: gerandoExcel
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child:
+                          CircularProgressIndicator(
+                        strokeWidth: 2,
                       ),
-                label: Text(
-                  gerandoExcel
-                      ? 'Gerando Excel...'
-                      : 'Gerar Excel',
+                    )
+                  : const Icon(
+                      Icons.table_view,
+                    ),
+              label: Text(
+                gerandoExcel
+                    ? 'Gerando Excel...'
+                    : 'Gerar Excel consolidado',
+              ),
+            ),
+
+            if (!todasConciliadas)
+              const Padding(
+                padding: EdgeInsets.only(top: 8),
+                child: Text(
+                  'A exportação fica bloqueada até '
+                  'todas as faturas apresentarem '
+                  'diferença de R\$ 0,00.',
+                  textAlign: TextAlign.center,
                 ),
               ),
 
-              const SizedBox(height: 8),
-
-              const Text(
-                'O arquivo será disponibilizado '
-                'pelo compartilhamento do Android.',
-                textAlign: TextAlign.center,
-              ),
-            ],
-
-            const SizedBox(height: 24),
+            const SizedBox(height: 26),
 
             const Text(
-              'Lançamentos encontrados',
+              'Conferência por fatura',
               style: TextStyle(
                 fontSize: 20,
-                fontWeight:
-                    FontWeight.bold,
+                fontWeight: FontWeight.bold,
               ),
             ),
 
             const SizedBox(height: 8),
 
-            ...r.lancamentos.map(
-              (item) {
-                var detalhe =
-                    '${item.data} • ${item.tipo}';
-
-                if (item.parcelada) {
-                  detalhe +=
-                      ' • ${item.parcelaAtual}'
-                      '/${item.totalParcelas}';
-                }
-
-                if (item.categoria.isNotEmpty) {
-                  detalhe +=
-                      '\n${item.categoria}';
-                }
+            ...faturas.map(
+              (fatura) {
+                final r = fatura.resultado;
 
                 return Card(
-                  child: ListTile(
-                    title: Text(
-                      item.descricao,
-                    ),
-                    subtitle:
-                        Text(detalhe),
-                    trailing: Text(
-                      dinheiro(item.valor),
-                      style:
-                          const TextStyle(
-                        fontWeight:
-                            FontWeight.bold,
-                      ),
+                  child: Padding(
+                    padding:
+                        const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment:
+                          CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          fatura.arquivo,
+                          style: const TextStyle(
+                            fontWeight:
+                                FontWeight.bold,
+                          ),
+                        ),
+
+                        const SizedBox(height: 10),
+
+                        linhaResumo(
+                          'Total da fatura',
+                          dinheiro(
+                            r.totalFatura ?? 0,
+                          ),
+                        ),
+
+                        linhaResumo(
+                          'Soma dos lançamentos',
+                          dinheiro(r.soma),
+                        ),
+
+                        linhaResumo(
+                          'Diferença',
+                          dinheiro(
+                            r.diferenca ?? 0,
+                          ),
+                        ),
+
+                        linhaResumo(
+                          'Lançamentos',
+                          '${r.lancamentos.length}',
+                        ),
+
+                        linhaResumo(
+                          'Parceladas',
+                          '${r.quantidadeParceladas}',
+                        ),
+
+                        const SizedBox(height: 8),
+
+                        Row(
+                          children: [
+                            Icon(
+                              r.conciliada
+                                  ? Icons.check_circle
+                                  : Icons.warning,
+                              color: r.conciliada
+                                  ? Colors.green
+                                  : Colors.orange,
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              r.conciliada
+                                  ? 'Conciliada'
+                                  : 'Divergente',
+                              style:
+                                  const TextStyle(
+                                fontWeight:
+                                    FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
                     ),
                   ),
                 );
               },
             ),
-
-            const SizedBox(height: 30),
-
-            if (!r.conciliada)
-              const Card(
-                child: Padding(
-                  padding:
-                      EdgeInsets.all(18),
-                  child: Text(
-                    'O Excel está bloqueado '
-                    'porque a fatura ainda '
-                    'possui divergência.',
-                    textAlign:
-                        TextAlign.center,
-                  ),
-                ),
-              ),
           ],
 
           const SizedBox(height: 40),
