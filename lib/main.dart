@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart';
 
@@ -11,20 +12,14 @@ void main() {
 class Lancamento {
   final String data;
   final String descricao;
-  final String categoria;
   final double valor;
   final int? parcelaAtual;
   final int? totalParcelas;
-  final String tipo;
-  final String observacao;
 
   Lancamento({
     required this.data,
     required this.descricao,
-    required this.categoria,
     required this.valor,
-    required this.tipo,
-    required this.observacao,
     this.parcelaAtual,
     this.totalParcelas,
   });
@@ -50,10 +45,7 @@ class ResultadoFatura {
   }
 
   double? get diferenca {
-    if (totalFatura == null) {
-      return null;
-    }
-
+    if (totalFatura == null) return null;
     return totalFatura! - soma;
   }
 
@@ -64,11 +56,8 @@ class ResultadoFatura {
   }
 
   bool get conciliada {
-    if (diferenca == null) {
-      return false;
-    }
-
-    return diferenca!.abs() < 0.01;
+    return diferenca != null &&
+        diferenca!.abs() < 0.01;
   }
 }
 
@@ -99,93 +88,8 @@ class ParserItau {
   static String normalizar(String texto) {
     return texto
         .replaceAll('\u00A0', ' ')
-        .replaceAll(
-          RegExp(r'[ \t]+'),
-          ' ',
-        )
+        .replaceAll(RegExp(r'[ \t]+'), ' ')
         .trim();
-  }
-
-  static bool linhaIgnorada(String linha) {
-    final texto = linha.toLowerCase();
-
-    final termos = [
-      'total da fatura',
-      'pagamento mínimo',
-      'pagamento minimo',
-      'limite de crédito',
-      'limite de credito',
-      'melhor data',
-      'vencimento',
-      'saldo anterior',
-      'total de pagamentos',
-      'total dos lançamentos',
-      'total dos lancamentos',
-      'compras parceladas - próximas faturas',
-      'compras parceladas - proximas faturas',
-      'próximas faturas',
-      'proximas faturas',
-    ];
-
-    return termos.any(
-      (termo) => texto.contains(termo),
-    );
-  }
-
-  static bool pareceComplemento(
-    String linha,
-  ) {
-    if (linha.isEmpty) {
-      return false;
-    }
-
-    if (RegExp(
-      r'^\d{2}/\d{2}',
-    ).hasMatch(linha)) {
-      return false;
-    }
-
-    if (RegExp(
-      r'^[\d\.,\-]+\s*$',
-    ).hasMatch(linha)) {
-      return false;
-    }
-
-    return true;
-  }
-
-  static String categoriaDaLinha(
-    String linha,
-  ) {
-    final texto = linha.toLowerCase();
-
-    const categorias = [
-      'alimentação',
-      'alimentacao',
-      'restaurante',
-      'supermercado',
-      'vestuário',
-      'vestuario',
-      'saúde',
-      'saude',
-      'transporte',
-      'serviços',
-      'servicos',
-      'educação',
-      'educacao',
-      'lazer',
-      'viagem',
-      'casa',
-      'outros',
-    ];
-
-    for (final categoria in categorias) {
-      if (texto.contains(categoria)) {
-        return categoria;
-      }
-    }
-
-    return '';
   }
 
   static ResultadoFatura processar(
@@ -195,10 +99,7 @@ class ParserItau {
 
     double? totalFatura;
 
-    // -----------------------------------
-    // IDENTIFICA O TOTAL DA FATURA
-    // -----------------------------------
-
+    // Procura o total da fatura.
     final expressoesTotal = [
       RegExp(
         r'total\s+(?:desta\s+)?fatura'
@@ -216,8 +117,7 @@ class ParserItau {
       ),
     ];
 
-    for (final expressao
-        in expressoesTotal) {
+    for (final expressao in expressoesTotal) {
       final match =
           expressao.firstMatch(texto);
 
@@ -225,192 +125,68 @@ class ParserItau {
         totalFatura = moedaParaDouble(
           match.group(1)!,
         );
-
         break;
       }
     }
 
-    // -----------------------------------
-    // SEPARA AS LINHAS DO PDF
-    // -----------------------------------
-
+    // Parser provisório.
+    // Depois do diagnóstico vamos substituir
+    // esta parte pelo padrão real da fatura.
     final linhas = texto
         .replaceAll('\r\n', '\n')
         .replaceAll('\r', '\n')
         .split('\n')
         .map(normalizar)
-        .where(
-          (linha) => linha.isNotEmpty,
-        )
+        .where((linha) => linha.isNotEmpty)
         .toList();
-
-    // -----------------------------------
-    // PADRÃO DE COMPRA
-    // -----------------------------------
 
     final regexCompra = RegExp(
       r'^(\d{2}/\d{2})'
       r'(?:/\d{2,4})?'
-      r'\s+'
-      r'(.+?)'
+      r'\s+(.+?)'
       r'(?:\s+(\d{1,2})/(\d{1,2}))?'
-      r'\s+'
-      r'(-?[\d\.]+,\d{2})'
+      r'\s+(-?[\d\.]+,\d{2})'
       r'\s*$',
-      caseSensitive: false,
     );
 
-    bool ignorarParcelasFuturas = false;
-
-    for (
-      int i = 0;
-      i < linhas.length;
-      i++
-    ) {
-      final linha = linhas[i];
-
-      final minuscula =
-          linha.toLowerCase();
-
-      // ---------------------------------
-      // NÃO SOMAR PARCELAS FUTURAS
-      // ---------------------------------
-
-      if (minuscula.contains(
-            'compras parceladas',
-          ) &&
-          (minuscula.contains(
-                'próximas',
-              ) ||
-              minuscula.contains(
-                'proximas',
-              ))) {
-        ignorarParcelasFuturas = true;
-        continue;
-      }
-
-      if (ignorarParcelasFuturas &&
-          (minuscula.contains(
-                'encargos',
-              ) ||
-              minuscula.contains(
-                'produtos e serviços',
-              ) ||
-              minuscula.contains(
-                'produtos e servicos',
-              ) ||
-              minuscula.contains(
-                'transações internacionais',
-              ) ||
-              minuscula.contains(
-                'transacoes internacionais',
-              ))) {
-        ignorarParcelasFuturas = false;
-      }
-
-      if (ignorarParcelasFuturas) {
-        continue;
-      }
-
-      if (linhaIgnorada(linha)) {
-        continue;
-      }
-
+    for (final linha in linhas) {
       final match =
           regexCompra.firstMatch(linha);
 
-      if (match == null) {
-        continue;
-      }
-
-      final data =
-          match.group(1)!;
+      if (match == null) continue;
 
       final descricao =
-          normalizar(
-        match.group(2) ?? '',
-      );
+          (match.group(2) ?? '').trim();
 
-      final parcelaAtual =
-          int.tryParse(
-        match.group(3) ?? '',
-      );
-
-      final totalParcelas =
-          int.tryParse(
-        match.group(4) ?? '',
-      );
-
-      final valor =
-          moedaParaDouble(
-        match.group(5)!,
-      );
-
-      String categoria = '';
-      String observacao = '';
-
-      // ---------------------------------
-      // TENTA LER A LINHA SEGUINTE
-      // ---------------------------------
-
-      if (i + 1 < linhas.length) {
-        final proxima =
-            linhas[i + 1];
-
-        if (pareceComplemento(
-              proxima,
-            ) &&
-            !linhaIgnorada(
-              proxima,
-            )) {
-          categoria =
-              categoriaDaLinha(
-            proxima,
-          );
-
-          observacao = proxima;
-        }
-      }
-
-      String tipo = 'À vista';
-
-      if (parcelaAtual != null &&
-          totalParcelas != null) {
-        tipo = 'Parcelada';
-      }
-
-      final descricaoMinuscula =
+      final descricaoLower =
           descricao.toLowerCase();
 
-      if (descricaoMinuscula.contains(
-        'iof',
-      )) {
-        tipo = 'Encargo / IOF';
-      }
-
-      if (descricaoMinuscula.contains(
-            'juros',
+      // Evita alguns resumos.
+      if (descricaoLower.contains(
+            'total da fatura',
           ) ||
-          descricaoMinuscula.contains(
-            'multa',
+          descricaoLower.contains(
+            'pagamento mínimo',
           ) ||
-          descricaoMinuscula.contains(
-            'tarifa',
+          descricaoLower.contains(
+            'pagamento minimo',
           )) {
-        tipo = 'Encargo';
+        continue;
       }
 
       lancamentos.add(
         Lancamento(
-          data: data,
+          data: match.group(1)!,
           descricao: descricao,
-          categoria: categoria,
-          valor: valor,
-          parcelaAtual: parcelaAtual,
-          totalParcelas:
-              totalParcelas,
-          tipo: tipo,
-          observacao: observacao,
+          parcelaAtual: int.tryParse(
+            match.group(3) ?? '',
+          ),
+          totalParcelas: int.tryParse(
+            match.group(4) ?? '',
+          ),
+          valor: moedaParaDouble(
+            match.group(5)!,
+          ),
         ),
       );
     }
@@ -422,11 +198,8 @@ class ParserItau {
   }
 }
 
-class ConferidorApp
-    extends StatelessWidget {
-  const ConferidorApp({
-    super.key,
-  });
+class ConferidorApp extends StatelessWidget {
+  const ConferidorApp({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -443,9 +216,7 @@ class ConferidorApp
 }
 
 class HomePage extends StatefulWidget {
-  const HomePage({
-    super.key,
-  });
+  const HomePage({super.key});
 
   @override
   State<HomePage> createState() {
@@ -453,8 +224,7 @@ class HomePage extends StatefulWidget {
   }
 }
 
-class _HomePageState
-    extends State<HomePage> {
+class _HomePageState extends State<HomePage> {
   bool processando = false;
 
   String status =
@@ -462,74 +232,56 @@ class _HomePageState
 
   String? nomeArquivo;
 
-  ResultadoFatura? resultado;
-
-  // Guarda o texto bruto extraído do PDF.
   String textoExtraido = '';
 
-  Future<void> selecionarFatura()
-      async {
+  ResultadoFatura? resultado;
+
+  Future<void> selecionarFatura() async {
     try {
       setState(() {
         processando = true;
-
-        status =
-            'Abrindo fatura...';
-
-        resultado = null;
-
+        status = 'Abrindo fatura...';
+        nomeArquivo = null;
         textoExtraido = '';
+        resultado = null;
       });
 
       final escolha =
-          await FilePicker.platform
-              .pickFiles(
+          await FilePicker.platform.pickFiles(
         type: FileType.custom,
-        allowedExtensions: [
-          'pdf',
-        ],
+        allowedExtensions: ['pdf'],
       );
 
       if (escolha == null) {
         setState(() {
           processando = false;
-
-          status =
-              'Seleção cancelada.';
+          status = 'Seleção cancelada.';
         });
-
         return;
       }
 
-      final arquivo =
-          escolha.files.single;
+      final arquivo = escolha.files.single;
 
       if (arquivo.path == null) {
         throw Exception(
-          'Não foi possível acessar '
-          'o arquivo.',
+          'Não foi possível acessar o arquivo.',
         );
       }
 
-      nomeArquivo = arquivo.name;
-
       setState(() {
-        status =
-            'Extraindo texto do PDF...';
+        nomeArquivo = arquivo.name;
+        status = 'Extraindo texto do PDF...';
       });
 
       final bytes =
-          await File(
-        arquivo.path!,
-      ).readAsBytes();
+          await File(arquivo.path!)
+              .readAsBytes();
 
-      final documento =
-          PdfDocument(
+      final documento = PdfDocument(
         inputBytes: bytes,
       );
 
-      final texto =
-          PdfTextExtractor(
+      final texto = PdfTextExtractor(
         documento,
       ).extractText();
 
@@ -537,89 +289,83 @@ class _HomePageState
 
       if (texto.trim().isEmpty) {
         throw Exception(
-          'O PDF não possui texto '
-          'pesquisável. Será necessário '
-          'OCR.',
+          'O PDF não possui texto pesquisável. '
+          'Será necessário OCR.',
         );
       }
 
-      // ---------------------------------
-      // DIAGNÓSTICO
-      // ---------------------------------
-
-      textoExtraido = texto;
-
-      setState(() {
-        status =
-            'Analisando lançamentos...';
-      });
-
       final analise =
-          ParserItau.processar(
-        texto,
-      );
+          ParserItau.processar(texto);
 
       setState(() {
+        textoExtraido = texto;
         resultado = analise;
-
         processando = false;
 
-        if (analise
-            .lancamentos.isEmpty) {
+        if (analise.lancamentos.isEmpty) {
           status =
-              'PDF lido, mas nenhum '
-              'lançamento foi reconhecido.';
+              'PDF lido. Use "Copiar diagnóstico" '
+              'para analisarmos o formato dos '
+              'lançamentos.';
         } else if (analise.conciliada) {
           status =
-              'Fatura processada e '
-              'conferida. Os lançamentos '
-              'estão conciliados.';
+              'Fatura processada e conferida.';
         } else {
           status =
-              'Fatura processada, mas '
-              'ainda existe diferença '
-              'na conferência.';
+              'Fatura processada, mas existe '
+              'diferença na conferência.';
         }
       });
     } catch (e) {
       setState(() {
         processando = false;
-
-        status =
-            'Erro:\n$e';
+        status = 'Erro:\n$e';
       });
     }
+  }
+
+  Future<void> copiarDiagnostico() async {
+    if (textoExtraido.isEmpty) return;
+
+    await Clipboard.setData(
+      ClipboardData(
+        text: textoExtraido,
+      ),
+    );
+
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context)
+        .showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Diagnóstico copiado. '
+          'Agora cole o texto no ChatGPT.',
+        ),
+      ),
+    );
   }
 
   String dinheiro(double valor) {
     final sinal =
         valor < 0 ? '-' : '';
 
-    final absoluto =
-        valor.abs();
+    final absoluto = valor.abs();
 
     final partes =
-        absoluto
-            .toStringAsFixed(2)
-            .split('.');
+        absoluto.toStringAsFixed(2).split('.');
 
-    final inteiro =
-        partes[0];
+    final inteiro = partes[0];
 
-    final buffer =
-        StringBuffer();
+    final buffer = StringBuffer();
 
-    for (
-      int i = 0;
-      i < inteiro.length;
-      i++
-    ) {
+    for (int i = 0;
+        i < inteiro.length;
+        i++) {
       final restante =
           inteiro.length - i;
 
-      buffer.write(
-        inteiro[i],
-      );
+      buffer.write(inteiro[i]);
 
       if (restante > 1 &&
           restante % 3 == 1) {
@@ -642,39 +388,29 @@ class _HomePageState
           'Conferidor de Faturas',
         ),
       ),
-
       body: ListView(
-        padding:
-            const EdgeInsets.all(20),
-
+        padding: const EdgeInsets.all(20),
         children: [
           const Icon(
             Icons.credit_card,
             size: 70,
           ),
 
-          const SizedBox(
-            height: 20,
-          ),
+          const SizedBox(height: 20),
 
           FilledButton.icon(
-            onPressed:
-                processando
-                    ? null
-                    : selecionarFatura,
-
+            onPressed: processando
+                ? null
+                : selecionarFatura,
             icon: const Icon(
               Icons.picture_as_pdf,
             ),
-
             label: const Text(
               'Selecionar fatura PDF',
             ),
           ),
 
-          const SizedBox(
-            height: 20,
-          ),
+          const SizedBox(height: 20),
 
           if (processando)
             const Center(
@@ -682,100 +418,88 @@ class _HomePageState
                   CircularProgressIndicator(),
             ),
 
-          const SizedBox(
-            height: 8,
-          ),
-
           Card(
             child: Padding(
               padding:
-                  const EdgeInsets.all(
-                16,
-              ),
-
-              child: Text(
-                status,
-              ),
+                  const EdgeInsets.all(16),
+              child: Text(status),
             ),
           ),
 
-          if (nomeArquivo != null)
-            Padding(
-              padding:
-                  const EdgeInsets.only(
-                top: 8,
+          if (nomeArquivo != null) ...[
+            const SizedBox(height: 8),
+
+            Text(
+              'Arquivo: $nomeArquivo',
+              style: const TextStyle(
+                fontWeight: FontWeight.bold,
               ),
+            ),
+          ],
 
-              child: Text(
-                'Arquivo: '
-                '$nomeArquivo',
+          // BOTÃO DE DIAGNÓSTICO
+          if (textoExtraido.isNotEmpty) ...[
+            const SizedBox(height: 16),
 
-                style:
-                    const TextStyle(
-                  fontWeight:
-                      FontWeight.bold,
-                ),
+            OutlinedButton.icon(
+              onPressed: copiarDiagnostico,
+              icon: const Icon(
+                Icons.content_copy,
+              ),
+              label: const Text(
+                'Copiar diagnóstico',
               ),
             ),
 
-          // =============================
-          // CONFERÊNCIA
-          // =============================
+            const SizedBox(height: 6),
+
+            const Text(
+              'Toque no botão acima e depois '
+              'cole o conteúdo no ChatGPT.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 13,
+              ),
+            ),
+          ],
 
           if (r != null) ...[
-            const SizedBox(
-              height: 24,
-            ),
+            const SizedBox(height: 24),
 
             const Text(
               'Conferência',
-
               style: TextStyle(
                 fontSize: 22,
-                fontWeight:
-                    FontWeight.bold,
+                fontWeight: FontWeight.bold,
               ),
             ),
 
-            const SizedBox(
-              height: 12,
-            ),
+            const SizedBox(height: 12),
 
             Card(
               child: Padding(
                 padding:
-                    const EdgeInsets.all(
-                  16,
-                ),
-
+                    const EdgeInsets.all(16),
                 child: Column(
                   crossAxisAlignment:
-                      CrossAxisAlignment
-                          .start,
-
+                      CrossAxisAlignment.start,
                   children: [
                     Text(
-                      r.totalFatura ==
-                              null
+                      r.totalFatura == null
                           ? 'Total da fatura: '
                               'não identificado'
                           : 'Total da fatura: '
                               '${dinheiro(r.totalFatura!)}',
                     ),
 
-                    const SizedBox(
-                      height: 5,
-                    ),
+                    const SizedBox(height: 5),
 
                     Text(
-                      'Soma dos '
-                      'lançamentos: '
+                      'Soma dos lançamentos: '
                       '${dinheiro(r.soma)}',
                     ),
 
-                    const SizedBox(
-                      height: 5,
-                    ),
+                    const SizedBox(height: 5),
 
                     Text(
                       r.diferenca == null
@@ -785,54 +509,35 @@ class _HomePageState
                               '${dinheiro(r.diferenca!)}',
                     ),
 
-                    const SizedBox(
-                      height: 5,
-                    ),
+                    const SizedBox(height: 5),
 
                     Text(
-                      'Lançamentos '
-                      'encontrados: '
+                      'Lançamentos encontrados: '
                       '${r.lancamentos.length}',
                     ),
 
-                    const SizedBox(
-                      height: 5,
-                    ),
+                    const SizedBox(height: 5),
 
                     Text(
                       'Compras parceladas: '
                       '${r.quantidadeParceladas}',
                     ),
 
-                    const SizedBox(
-                      height: 12,
-                    ),
+                    const SizedBox(height: 12),
 
                     if (r.conciliada)
                       const Row(
                         children: [
                           Icon(
-                            Icons
-                                .check_circle,
-                            color:
-                                Colors.green,
+                            Icons.check_circle,
+                            color: Colors.green,
                           ),
-
-                          SizedBox(
-                            width: 8,
-                          ),
-
-                          Expanded(
-                            child: Text(
-                              'Fatura '
-                              'conciliada',
-
-                              style:
-                                  TextStyle(
-                                fontWeight:
-                                    FontWeight
-                                        .bold,
-                              ),
+                          SizedBox(width: 8),
+                          Text(
+                            'Fatura conciliada',
+                            style: TextStyle(
+                              fontWeight:
+                                  FontWeight.bold,
                             ),
                           ),
                         ],
@@ -841,27 +546,15 @@ class _HomePageState
                       const Row(
                         children: [
                           Icon(
-                            Icons
-                                .warning_amber,
-                            color:
-                                Colors.orange,
+                            Icons.warning_amber,
+                            color: Colors.orange,
                           ),
-
-                          SizedBox(
-                            width: 8,
-                          ),
-
-                          Expanded(
-                            child: Text(
-                              'Conferência '
-                              'pendente',
-
-                              style:
-                                  TextStyle(
-                                fontWeight:
-                                    FontWeight
-                                        .bold,
-                              ),
+                          SizedBox(width: 8),
+                          Text(
+                            'Conferência pendente',
+                            style: TextStyle(
+                              fontWeight:
+                                  FontWeight.bold,
                             ),
                           ),
                         ],
@@ -871,145 +564,49 @@ class _HomePageState
               ),
             ),
 
-            const SizedBox(
-              height: 20,
-            ),
+            if (r.lancamentos.isNotEmpty)
+              ...[
+                const SizedBox(height: 20),
 
-            const Text(
-              'Lançamentos encontrados',
+                const Text(
+                  'Lançamentos encontrados',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight:
+                        FontWeight.bold,
+                  ),
+                ),
 
-              style: TextStyle(
-                fontSize: 20,
-                fontWeight:
-                    FontWeight.bold,
-              ),
-            ),
+                const SizedBox(height: 8),
 
-            const SizedBox(
-              height: 8,
-            ),
-
-            ...r.lancamentos.map(
-              (item) {
-                String detalhe =
-                    '${item.data} • '
-                    '${item.tipo}';
-
-                if (item.parcelada) {
-                  detalhe +=
-                      ' • '
-                      '${item.parcelaAtual}'
-                      '/'
-                      '${item.totalParcelas}';
-                }
-
-                if (item
-                    .categoria.isNotEmpty) {
-                  detalhe +=
-                      '\nCategoria: '
-                      '${item.categoria}';
-                }
-
-                if (item
-                    .observacao.isNotEmpty) {
-                  detalhe +=
-                      '\n'
-                      '${item.observacao}';
-                }
-
-                return Card(
-                  child: ListTile(
-                    title: Text(
-                      item.descricao,
-                    ),
-
-                    subtitle: Text(
-                      detalhe,
-                    ),
-
-                    trailing: Text(
-                      dinheiro(
-                        item.valor,
+                ...r.lancamentos.map(
+                  (item) => Card(
+                    child: ListTile(
+                      title: Text(
+                        item.descricao,
                       ),
-
-                      style:
-                          const TextStyle(
-                        fontWeight:
-                            FontWeight.bold,
+                      subtitle: Text(
+                        item.parcelada
+                            ? '${item.data} • '
+                                '${item.parcelaAtual}/'
+                                '${item.totalParcelas}'
+                            : '${item.data} • '
+                                'À vista',
+                      ),
+                      trailing: Text(
+                        dinheiro(item.valor),
+                        style: const TextStyle(
+                          fontWeight:
+                              FontWeight.bold,
+                        ),
                       ),
                     ),
                   ),
-                );
-              },
-            ),
+                ),
+              ],
           ],
 
-          // =============================
-          // DIAGNÓSTICO DO PDF
-          // =============================
-
-          if (textoExtraido.isNotEmpty)
-            ...[
-              const SizedBox(
-                height: 30,
-              ),
-
-              const Divider(),
-
-              const SizedBox(
-                height: 15,
-              ),
-
-              const Text(
-                'Diagnóstico do PDF',
-
-                style: TextStyle(
-                  fontSize: 22,
-                  fontWeight:
-                      FontWeight.bold,
-                ),
-              ),
-
-              const SizedBox(
-                height: 8,
-              ),
-
-              const Text(
-                'Texto bruto extraído '
-                'da fatura. Esta área é '
-                'temporária e será usada '
-                'para ajustar a leitura '
-                'dos lançamentos.',
-              ),
-
-              const SizedBox(
-                height: 12,
-              ),
-
-              Card(
-                child: Padding(
-                  padding:
-                      const EdgeInsets.all(
-                    16,
-                  ),
-
-                  child:
-                      SelectableText(
-                    textoExtraido,
-
-                    style:
-                        const TextStyle(
-                      fontSize: 12,
-                      height: 1.4,
-                    ),
-                  ),
-                ),
-              ),
-            ],
-
-          const SizedBox(
-            height: 50,
-          ),
+          const SizedBox(height: 40),
         ],
       ),
     );
