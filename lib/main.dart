@@ -8,6 +8,10 @@ void main() {
   runApp(const ConferidorApp());
 }
 
+// ============================================================
+// MODELOS
+// ============================================================
+
 class Lancamento {
   final String data;
   final String descricao;
@@ -57,36 +61,61 @@ class ResultadoFatura {
   }
 
   double? get diferenca {
-    if (totalFatura == null) return null;
+    if (totalFatura == null) {
+      return null;
+    }
+
     return totalFatura! - soma;
   }
 
   int get quantidadeParceladas {
-    return lancamentos.where((e) => e.parcelada).length;
+    return lancamentos
+        .where((item) => item.parcelada)
+        .length;
   }
 
   bool get conciliada {
-    if (diferenca == null) return false;
+    if (diferenca == null) {
+      return false;
+    }
+
     return diferenca!.abs() < 0.01;
   }
 }
 
-class ParserItau {
-  static double moeda(String valor) {
-    var texto = valor.trim();
+// ============================================================
+// PARSER ITAÚ
+// ============================================================
 
-    bool negativo = texto.startsWith('-');
+class ParserItau {
+  static double moedaParaDouble(String valor) {
+    var texto = valor
+        .replaceAll('R\$', '')
+        .replaceAll(' ', '')
+        .trim();
+
+    bool negativo = false;
+
+    if (texto.startsWith('-')) {
+      negativo = true;
+      texto = texto.substring(1);
+    }
 
     texto = texto
-        .replaceAll('-', '')
-        .replaceAll('R\$', '')
         .replaceAll('.', '')
-        .replaceAll(',', '.')
-        .replaceAll(' ', '');
+        .replaceAll(',', '.');
 
-    final numero = double.tryParse(texto) ?? 0.0;
+    final numero =
+        double.tryParse(texto) ?? 0.0;
 
     return negativo ? -numero : numero;
+  }
+
+  static String limparEspacos(String texto) {
+    return texto
+        .replaceAll('\u00A0', ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
   }
 
   static double? procurarValor(
@@ -95,124 +124,558 @@ class ParserItau {
   ) {
     final match = expressao.firstMatch(texto);
 
-    if (match == null || match.group(1) == null) {
+    if (match == null ||
+        match.group(1) == null) {
       return null;
     }
 
-    return moeda(match.group(1)!);
+    return moedaParaDouble(
+      match.group(1)!,
+    );
   }
 
-  static String limparDescricao(String texto) {
-    var resultado = texto;
+  static String normalizarCategoria(
+    String categoria,
+  ) {
+    final c = categoria
+        .trim()
+        .toLowerCase();
 
-    resultado = resultado
-        .replaceAll(
+    switch (c) {
+      case 'vestuario':
+        return 'vestuário';
+
+      case 'saude':
+        return 'saúde';
+
+      case 'servicos':
+        return 'serviços';
+
+      case 'eletronicos':
+        return 'eletrônicos';
+
+      case 'supermarket':
+        return 'supermercado';
+
+      case 'health':
+        return 'saúde';
+
+      case 'money':
+        return 'serviços';
+
+      case 'hotel':
+        return 'hotel';
+
+      default:
+        return c;
+    }
+  }
+
+  // ==========================================================
+  // COMPRAS E SAQUES
+  // ==========================================================
+
+  static List<Lancamento> lerCompras(
+    String texto,
+  ) {
+    final resultado = <Lancamento>[];
+
+    final inicio =
+        texto.indexOf(
+      'Lançamentos: compras e saques',
+    );
+
+    final fim =
+        texto.indexOf(
+      'Lançamentos no cartão',
+    );
+
+    if (inicio < 0 ||
+        fim <= inicio) {
+      return resultado;
+    }
+
+    var secao = texto.substring(
+      inicio,
+      fim,
+    );
+
+    // Remove cabeçalhos repetidos.
+    secao = secao.replaceAll(
+      RegExp(
+        r'Lançamentos:\s*compras\s*e\s*saques',
+        caseSensitive: false,
+      ),
+      '',
+    );
+
+    secao = secao.replaceAll(
+      RegExp(
+        r'DATAESTABELECIMENTOVALOR\s*EM\s*R\$',
+        caseSensitive: false,
+      ),
+      '',
+    );
+
+    secao = secao.replaceAll(
+      'continua...',
+      '',
+    );
+
+    secao = secao
+        .replaceAll('\r', '')
+        .replaceAll('\n', '');
+
+    /*
+      IMPORTANTE
+
+      Primeiro procuramos compras PARCELADAS.
+
+      Exemplo:
+
+      25/04JIM.COM* RIZZO 05/12416,58restaurante
+
+      Assim 05/12 não é confundido com uma nova data.
+    */
+
+    final categorias =
+        r'(restaurante|supermercado|vestuário|vestuario|'
+        r'saúde|saude|serviços|servicos|outros|lazer|'
+        r'eletronicos|eletrônicos|hotel|health|money|'
+        r'supermarket)';
+
+    final regexLancamento = RegExp(
+      r'(\d{2}/\d{2})'
+      r'(.+?)'
+      r'(?:\s(\d{2})/(\d{2}))?'
+      r'(-?[\d\.]+,\d{2})'
+      + categorias,
+      caseSensitive: false,
+    );
+
+    final matches =
+        regexLancamento.allMatches(secao);
+
+    for (final match in matches) {
+      final data =
+          match.group(1) ?? '';
+
+      var descricao =
+          match.group(2) ?? '';
+
+      final parcelaAtual =
+          int.tryParse(
+        match.group(3) ?? '',
+      );
+
+      final totalParcelas =
+          int.tryParse(
+        match.group(4) ?? '',
+      );
+
+      final valorTexto =
+          match.group(5);
+
+      final categoriaTexto =
+          match.group(6);
+
+      if (valorTexto == null ||
+          categoriaTexto == null) {
+        continue;
+      }
+
+      descricao =
+          limparEspacos(descricao);
+
+      /*
+        Segurança extra:
+        se a descrição terminou com parcela porque
+        o RegExp colocou a parcela dentro dela,
+        retiramos manualmente.
+      */
+
+      int? parcelaFinal =
+          parcelaAtual;
+
+      int? totalParcelasFinal =
+          totalParcelas;
+
+      final parcelaNaDescricao =
           RegExp(
-            r'Lançamentos:\s*compras\s*e\s*saques',
-            caseSensitive: false,
-          ),
-          '',
-        )
-        .replaceAll(
-          RegExp(
-            r'DATAESTABELECIMENTOVALOR\s*EM\s*R\$',
-            caseSensitive: false,
-          ),
-          '',
-        )
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .trim();
+        r'\s(\d{2})/(\d{2})$',
+      ).firstMatch(descricao);
+
+      if (parcelaNaDescricao != null) {
+        parcelaFinal =
+            int.tryParse(
+          parcelaNaDescricao.group(1)!,
+        );
+
+        totalParcelasFinal =
+            int.tryParse(
+          parcelaNaDescricao.group(2)!,
+        );
+
+        descricao = descricao
+            .substring(
+              0,
+              parcelaNaDescricao.start,
+            )
+            .trim();
+      }
+
+      if (descricao.isEmpty) {
+        continue;
+      }
+
+      final valor =
+          moedaParaDouble(valorTexto);
+
+      final categoria =
+          normalizarCategoria(
+        categoriaTexto,
+      );
+
+      resultado.add(
+        Lancamento(
+          data: data,
+          descricao: descricao,
+          categoria: categoria,
+          valor: valor,
+          parcelaAtual:
+              parcelaFinal,
+          totalParcelas:
+              totalParcelasFinal,
+          tipo:
+              parcelaFinal != null &&
+                      totalParcelasFinal != null
+                  ? 'Parcelada'
+                  : 'À vista',
+        ),
+      );
+    }
 
     return resultado;
   }
 
-  static String detectarCategoria(String bloco) {
-    final minusculo = bloco.toLowerCase();
+  // ==========================================================
+  // INTERNACIONAL
+  // ==========================================================
 
-    const categorias = [
-      'supermercado',
-      'restaurante',
-      'vestuário',
-      'vestuario',
-      'saúde',
-      'saude',
-      'serviços',
-      'servicos',
-      'eletronicos',
-      'eletrônicos',
-      'hotel',
-      'lazer',
-      'health',
-      'money',
-      'supermarket',
-      'outros',
-    ];
+  static List<Lancamento>
+      lerInternacional(
+    String texto,
+  ) {
+    final resultado =
+        <Lancamento>[];
 
-    for (final categoria in categorias) {
-      if (minusculo.contains(categoria)) {
-        return categoria;
+    final inicio =
+        texto.indexOf(
+      'Lançamentos internacionais',
+    );
+
+    final fim =
+        texto.indexOf(
+      'Lançamentos: produtos e serviços',
+    );
+
+    if (inicio < 0 ||
+        fim <= inicio) {
+      return resultado;
+    }
+
+    final secao = texto.substring(
+      inicio,
+      fim,
+    );
+
+    /*
+      Exemplo da fatura:
+
+      30/08OPENAI *CHATGPT SUBSCRS106,1299,90BRL19,26
+      Dólar de Conversão R$ 5,51
+      Total transações inter. em R$106,12
+      Repasse de IOF em R$3,71
+    */
+
+    final totalCompra =
+        procurarValor(
+      secao,
+      RegExp(
+        r'Total transações inter\.\s*em R\$'
+        r'([\d\.]+,\d{2})',
+        caseSensitive: false,
+      ),
+    );
+
+    final iof =
+        procurarValor(
+      secao,
+      RegExp(
+        r'Repasse de IOF\s*em R\$'
+        r'([\d\.]+,\d{2})',
+        caseSensitive: false,
+      ),
+    );
+
+    String data = '';
+    String descricao =
+        'Compra internacional';
+
+    final dataMatch =
+        RegExp(
+      r'(\d{2}/\d{2})',
+    ).firstMatch(secao);
+
+    if (dataMatch != null) {
+      data =
+          dataMatch.group(1) ?? '';
+    }
+
+    /*
+      Captura a descrição entre a data
+      e o primeiro valor monetário.
+    */
+
+    final descricaoMatch =
+        RegExp(
+      r'\d{2}/\d{2}'
+      r'(.+?)'
+      r'[\d\.]+,\d{2}'
+      r'[\d\.]+,\d{2}'
+      r'BRL',
+      caseSensitive: false,
+    ).firstMatch(secao);
+
+    if (descricaoMatch != null) {
+      var encontrada =
+          descricaoMatch.group(1) ?? '';
+
+      /*
+        O texto real contém algo como:
+        OPENAI *CHATGPT SUBSCRS
+
+        O "S" imediatamente antes do valor
+        é o indicador de moeda US$ que ficou
+        grudado no texto extraído.
+      */
+
+      encontrada =
+          limparEspacos(encontrada);
+
+      if (encontrada.endsWith('S')) {
+        encontrada = encontrada.substring(
+          0,
+          encontrada.length - 1,
+        );
+      }
+
+      encontrada =
+          encontrada.trim();
+
+      if (encontrada.isNotEmpty) {
+        descricao = encontrada;
       }
     }
 
-    return '';
-  }
-
-  static String retirarCategoriaECidade(
-    String texto,
-  ) {
-    /*
-      O texto extraído costuma terminar assim:
-
-      416,58restaurante SAO PEDRO
-      52,28vestuário SAO PAULO
-
-      Esta função é usada apenas para limpar
-      informações que ficaram anexadas.
-    */
-
-    final categorias = RegExp(
-      r'(restaurante|supermercado|vestuário|vestuario|'
-      r'saúde|saude|serviços|servicos|outros|lazer|'
-      r'eletronicos|eletrônicos|hotel|health|money|'
-      r'supermarket)',
-      caseSensitive: false,
-    );
-
-    final match = categorias.firstMatch(texto);
-
-    if (match == null) {
-      return texto.trim();
+    if (totalCompra != null) {
+      resultado.add(
+        Lancamento(
+          data: data,
+          descricao: descricao,
+          categoria:
+              'internacional',
+          valor: totalCompra,
+          tipo: 'Internacional',
+          observacoes:
+              'Transação internacional',
+        ),
+      );
     }
 
-    return texto.substring(0, match.start).trim();
+    if (iof != null) {
+      resultado.add(
+        Lancamento(
+          data: '',
+          descricao:
+              'Repasse de IOF - transação internacional',
+          categoria: 'encargos',
+          valor: iof,
+          tipo: 'Encargo / IOF',
+          observacoes:
+              'IOF da transação internacional',
+        ),
+      );
+    }
+
+    return resultado;
   }
 
-  static ResultadoFatura processar(String textoOriginal) {
+  // ==========================================================
+  // PRODUTOS E SERVIÇOS
+  // ==========================================================
+
+  static List<Lancamento>
+      lerProdutosServicos(
+    String texto,
+  ) {
+    final resultado =
+        <Lancamento>[];
+
+    final inicio =
+        texto.indexOf(
+      'Lançamentos: produtos e serviços',
+    );
+
+    final fim =
+        texto.indexOf(
+      'Total dos lançamentos atuais',
+    );
+
+    if (inicio < 0 ||
+        fim <= inicio) {
+      return resultado;
+    }
+
+    var secao =
+        texto.substring(
+      inicio,
+      fim,
+    );
+
+    secao = secao.replaceAll(
+      RegExp(
+        r'Lançamentos:\s*produtos\s*e\s*serviços',
+        caseSensitive: false,
+      ),
+      '',
+    );
+
+    secao = secao.replaceAll(
+      RegExp(
+        r'DATAPRODUTOS/SERVIÇOSVALOR\s*EM\s*R\$',
+        caseSensitive: false,
+      ),
+      '',
+    );
+
+    secao = secao
+        .replaceAll('\r', '')
+        .replaceAll('\n', '');
+
+    final datas =
+        RegExp(
+      r'\d{2}/\d{2}',
+    ).allMatches(secao).toList();
+
+    for (int i = 0;
+        i < datas.length;
+        i++) {
+      final atual = datas[i];
+
+      final inicioBloco =
+          atual.start;
+
+      final fimBloco =
+          i + 1 < datas.length
+              ? datas[i + 1].start
+              : secao.length;
+
+      var bloco =
+          secao.substring(
+        inicioBloco,
+        fimBloco,
+      );
+
+      final data =
+          bloco.substring(0, 5);
+
+      bloco =
+          bloco.substring(5);
+
+      final valorMatch =
+          RegExp(
+        r'(-?[\d\.]+,\d{2})',
+      ).firstMatch(bloco);
+
+      if (valorMatch == null) {
+        continue;
+      }
+
+      var descricao =
+          bloco.substring(
+        0,
+        valorMatch.start,
+      );
+
+      descricao =
+          limparEspacos(descricao);
+
+      if (descricao.isEmpty) {
+        descricao =
+            'Produto/serviço Itaú';
+      }
+
+      final valor =
+          moedaParaDouble(
+        valorMatch.group(1)!,
+      );
+
+      resultado.add(
+        Lancamento(
+          data: data,
+          descricao: descricao,
+          categoria:
+              'produtos e serviços',
+          valor: valor,
+          tipo: 'Produto/Serviço',
+        ),
+      );
+    }
+
+    return resultado;
+  }
+
+  // ==========================================================
+  // PROCESSAMENTO COMPLETO
+  // ==========================================================
+
+  static ResultadoFatura processar(
+    String textoOriginal,
+  ) {
+    /*
+      Mantemos o conteúdo, mas retiramos
+      quebras de linha para reproduzir
+      corretamente a estrutura extraída
+      pelo PDF do Itaú.
+    */
+
     final texto = textoOriginal
         .replaceAll('\r', '')
         .replaceAll('\n', '');
 
-    // -------------------------------
-    // TOTAIS INFORMADOS PELO ITAÚ
-    // -------------------------------
-
-    final totalFatura = procurarValor(
+    final totalFatura =
+        procurarValor(
       texto,
       RegExp(
-        r'Total desta fatura([\d\.]+,\d{2})',
+        r'Total desta fatura'
+        r'([\d\.]+,\d{2})',
         caseSensitive: false,
       ),
     );
 
-    final totalCartao = procurarValor(
+    final totalCartao =
+        procurarValor(
       texto,
       RegExp(
-        r'Lançamentos no cartão([\d\.]+,\d{2})',
+        r'Lançamentos no cartão'
+        r'([\d\.]+,\d{2})',
         caseSensitive: false,
       ),
     );
 
-    final totalInternacional = procurarValor(
+    final totalInternacional =
+        procurarValor(
       texto,
       RegExp(
         r'Total lançamentos\s*inter\.\s*em R\$'
@@ -221,7 +684,8 @@ class ParserItau {
       ),
     );
 
-    final totalServicos = procurarValor(
+    final totalServicos =
+        procurarValor(
       texto,
       RegExp(
         r'Lançamentos produtos e serviços'
@@ -230,299 +694,25 @@ class ParserItau {
       ),
     );
 
-    final lancamentos = <Lancamento>[];
+    final lancamentos =
+        <Lancamento>[];
 
-    // ==========================================
-    // 1 - COMPRAS E SAQUES
-    // ==========================================
+    lancamentos.addAll(
+      lerCompras(texto),
+    );
 
-    final inicioCompras =
-        texto.indexOf('Lançamentos: compras e saques');
+    lancamentos.addAll(
+      lerInternacional(texto),
+    );
 
-    final fimCompras =
-        texto.indexOf('Lançamentos no cartão');
-
-    if (inicioCompras >= 0 &&
-        fimCompras > inicioCompras) {
-      final secaoCompras = texto.substring(
-        inicioCompras,
-        fimCompras,
-      );
-
-      /*
-        Cada lançamento começa por DD/MM.
-        O próximo DD/MM delimita o anterior.
-      */
-
-      final datas = RegExp(
-        r'\d{2}/\d{2}',
-      ).allMatches(secaoCompras).toList();
-
-      for (int i = 0; i < datas.length; i++) {
-        final atual = datas[i];
-
-        final inicio = atual.start;
-
-        final fim = i + 1 < datas.length
-            ? datas[i + 1].start
-            : secaoCompras.length;
-
-        var bloco =
-            secaoCompras.substring(inicio, fim);
-
-        final data =
-            bloco.substring(0, 5);
-
-        bloco = bloco.substring(5);
-
-        // Valor seguido pela categoria.
-        final valorCategoria = RegExp(
-          r'(-?[\d\.]+,\d{2})'
-          r'(restaurante|supermercado|vestuário|vestuario|'
-          r'saúde|saude|serviços|servicos|outros|lazer|'
-          r'eletronicos|eletrônicos|hotel|health|money|'
-          r'supermarket)',
-          caseSensitive: false,
-        ).firstMatch(bloco);
-
-        if (valorCategoria == null) {
-          continue;
-        }
-
-        final valor =
-            moeda(valorCategoria.group(1)!);
-
-        final categoria =
-            valorCategoria.group(2) ?? '';
-
-        var descricaoComParcela = bloco.substring(
-          0,
-          valorCategoria.start,
-        );
-
-        descricaoComParcela =
-            limparDescricao(descricaoComParcela);
-
-        int? parcelaAtual;
-        int? totalParcelas;
-
-        final parcela = RegExp(
-          r'\s(\d{2})/(\d{2})$',
-        ).firstMatch(descricaoComParcela);
-
-        if (parcela != null) {
-          parcelaAtual =
-              int.tryParse(parcela.group(1)!);
-
-          totalParcelas =
-              int.tryParse(parcela.group(2)!);
-
-          descricaoComParcela =
-              descricaoComParcela
-                  .substring(0, parcela.start)
-                  .trim();
-        }
-
-        final descricao =
-            retirarCategoriaECidade(
-          descricaoComParcela,
-        );
-
-        if (descricao.isEmpty) {
-          continue;
-        }
-
-        lancamentos.add(
-          Lancamento(
-            data: data,
-            descricao: descricao,
-            categoria: categoria,
-            valor: valor,
-            parcelaAtual: parcelaAtual,
-            totalParcelas: totalParcelas,
-            tipo: parcelaAtual != null
-                ? 'Parcelada'
-                : 'À vista',
-          ),
-        );
-      }
-    }
-
-    // ==========================================
-    // 2 - TRANSAÇÕES INTERNACIONAIS
-    // ==========================================
-
-    final inicioInternacional =
-        texto.indexOf('Lançamentos internacionais');
-
-    final fimInternacional =
-        texto.indexOf('Lançamentos: produtos e serviços');
-
-    if (inicioInternacional >= 0 &&
-        fimInternacional > inicioInternacional) {
-      final secao = texto.substring(
-        inicioInternacional,
-        fimInternacional,
-      );
-
-      /*
-        Na fatura de teste:
-        compra internacional = R$ 106,12
-        IOF = R$ 3,71
-      */
-
-      final totalTransacoes = procurarValor(
-        secao,
-        RegExp(
-          r'Total transações inter\. em R\$'
-          r'([\d\.]+,\d{2})',
-          caseSensitive: false,
-        ),
-      );
-
-      final iof = procurarValor(
-        secao,
-        RegExp(
-          r'Repasse de IOF em R\$'
-          r'([\d\.]+,\d{2})',
-          caseSensitive: false,
-        ),
-      );
-
-      final compra = RegExp(
-        r'(\d{2}/\d{2})'
-        r'(.+?)'
-        r'([\d\.]+,\d{2})'
-        r'BRL',
-        caseSensitive: false,
-      ).firstMatch(secao);
-
-      if (totalTransacoes != null) {
-        String descricao = 'Compra internacional';
-        String data = '';
-
-        if (compra != null) {
-          data = compra.group(1) ?? '';
-          descricao =
-              limparDescricao(compra.group(2) ?? '');
-
-          if (descricao.isEmpty) {
-            descricao = 'Compra internacional';
-          }
-        }
-
-        lancamentos.add(
-          Lancamento(
-            data: data,
-            descricao: descricao,
-            categoria: 'Internacional',
-            valor: totalTransacoes,
-            tipo: 'Internacional',
-          ),
-        );
-      }
-
-      if (iof != null) {
-        lancamentos.add(
-          Lancamento(
-            data: '',
-            descricao:
-                'Repasse de IOF - transação internacional',
-            categoria: 'Encargos',
-            valor: iof,
-            tipo: 'Encargo / IOF',
-          ),
-        );
-      }
-    }
-
-    // ==========================================
-    // 3 - PRODUTOS E SERVIÇOS
-    // ==========================================
-
-    final inicioServicos =
-        texto.indexOf('Lançamentos: produtos e serviços');
-
-    final fimServicos =
-        texto.indexOf('Total dos lançamentos atuais');
-
-    if (inicioServicos >= 0 &&
-        fimServicos > inicioServicos) {
-      final secao = texto.substring(
-        inicioServicos,
-        fimServicos,
-      );
-
-      /*
-        Exemplo real:
-
-        03/08Mensalidade - Plano do105,00
-        Anuidade Diferenciada
-        30/08Redução Mensalidade - P-52,50
-      */
-
-      final datas = RegExp(
-        r'\d{2}/\d{2}',
-      ).allMatches(secao).toList();
-
-      for (int i = 0; i < datas.length; i++) {
-        final atual = datas[i];
-
-        final inicio = atual.start;
-
-        final fim = i + 1 < datas.length
-            ? datas[i + 1].start
-            : secao.length;
-
-        var bloco =
-            secao.substring(inicio, fim);
-
-        final data =
-            bloco.substring(0, 5);
-
-        bloco = bloco.substring(5);
-
-        final valorMatch = RegExp(
-          r'(-?[\d\.]+,\d{2})',
-        ).firstMatch(bloco);
-
-        if (valorMatch == null) {
-          continue;
-        }
-
-        final valor =
-            moeda(valorMatch.group(1)!);
-
-        var descricao = bloco.substring(
-          0,
-          valorMatch.start,
-        );
-
-        descricao =
-            limparDescricao(descricao);
-
-        if (descricao.isEmpty) {
-          descricao =
-              'Produto/serviço Itaú';
-        }
-
-        lancamentos.add(
-          Lancamento(
-            data: data,
-            descricao: descricao,
-            categoria:
-                'Produtos e serviços',
-            valor: valor,
-            tipo:
-                'Produto/Serviço',
-          ),
-        );
-      }
-    }
+    lancamentos.addAll(
+      lerProdutosServicos(texto),
+    );
 
     return ResultadoFatura(
       totalFatura: totalFatura,
-      totalCartaoInformado: totalCartao,
+      totalCartaoInformado:
+          totalCartao,
       totalInternacionalInformado:
           totalInternacional,
       totalServicosInformado:
@@ -532,16 +722,26 @@ class ParserItau {
   }
 }
 
-class ConferidorApp extends StatelessWidget {
+// ============================================================
+// APLICATIVO
+// ============================================================
+
+class ConferidorApp
+    extends StatelessWidget {
   const ConferidorApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(
+    BuildContext context,
+  ) {
     return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      title: 'Conferidor de Faturas',
+      debugShowCheckedModeBanner:
+          false,
+      title:
+          'Conferidor de Faturas',
       theme: ThemeData(
-        colorSchemeSeed: Colors.blue,
+        colorSchemeSeed:
+            Colors.blue,
         useMaterial3: true,
       ),
       home: const HomePage(),
@@ -549,7 +749,8 @@ class ConferidorApp extends StatelessWidget {
   }
 }
 
-class HomePage extends StatefulWidget {
+class HomePage
+    extends StatefulWidget {
   const HomePage({super.key});
 
   @override
@@ -557,7 +758,8 @@ class HomePage extends StatefulWidget {
       _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState
+    extends State<HomePage> {
   bool processando = false;
 
   String status =
@@ -567,16 +769,21 @@ class _HomePageState extends State<HomePage> {
 
   ResultadoFatura? resultado;
 
-  Future<void> selecionarFatura() async {
+  Future<void>
+      selecionarFatura() async {
     try {
       setState(() {
         processando = true;
         resultado = null;
-        status = 'Selecionando fatura...';
+        nomeArquivo = null;
+
+        status =
+            'Selecionando fatura...';
       });
 
       final escolha =
-          await FilePicker.platform.pickFiles(
+          await FilePicker.platform
+              .pickFiles(
         type: FileType.custom,
         allowedExtensions: ['pdf'],
       );
@@ -584,12 +791,15 @@ class _HomePageState extends State<HomePage> {
       if (escolha == null) {
         setState(() {
           processando = false;
-          status = 'Seleção cancelada.';
+          status =
+              'Seleção cancelada.';
         });
+
         return;
       }
 
-      final arquivo = escolha.files.single;
+      final arquivo =
+          escolha.files.single;
 
       if (arquivo.path == null) {
         throw Exception(
@@ -597,35 +807,42 @@ class _HomePageState extends State<HomePage> {
         );
       }
 
-      nomeArquivo = arquivo.name;
-
       setState(() {
+        nomeArquivo =
+            arquivo.name;
+
         status =
-            'Lendo e analisando a fatura...';
+            'Lendo e conferindo a fatura...';
       });
 
       final bytes =
-          await File(arquivo.path!)
-              .readAsBytes();
+          await File(
+        arquivo.path!,
+      ).readAsBytes();
 
       final documento =
-          PdfDocument(inputBytes: bytes);
+          PdfDocument(
+        inputBytes: bytes,
+      );
 
       final texto =
-          PdfTextExtractor(documento)
-              .extractText();
+          PdfTextExtractor(
+        documento,
+      ).extractText();
 
       documento.dispose();
 
       if (texto.trim().isEmpty) {
         throw Exception(
-          'Não foi possível extrair texto '
-          'do PDF.',
+          'Não foi possível extrair '
+          'texto do PDF.',
         );
       }
 
       final analise =
-          ParserItau.processar(texto);
+          ParserItau.processar(
+        texto,
+      );
 
       setState(() {
         resultado = analise;
@@ -637,29 +854,39 @@ class _HomePageState extends State<HomePage> {
         } else {
           status =
               'Fatura processada. '
-              'Confira a diferença abaixo.';
+              'Ainda existe diferença '
+              'na conferência.';
         }
       });
     } catch (e) {
       setState(() {
         processando = false;
-        status = 'Erro:\n$e';
+
+        status =
+            'Erro ao processar:\n$e';
       });
     }
   }
 
-  String dinheiro(double valor) {
+  String dinheiro(
+    double valor,
+  ) {
     final sinal =
         valor < 0 ? '-' : '';
 
-    final absoluto = valor.abs();
+    final absoluto =
+        valor.abs();
 
     final partes =
-        absoluto.toStringAsFixed(2).split('.');
+        absoluto
+            .toStringAsFixed(2)
+            .split('.');
 
-    var inteiro = partes[0];
+    final inteiro =
+        partes[0];
 
-    final buffer = StringBuffer();
+    final buffer =
+        StringBuffer();
 
     for (int i = 0;
         i < inteiro.length;
@@ -667,7 +894,9 @@ class _HomePageState extends State<HomePage> {
       final restante =
           inteiro.length - i;
 
-      buffer.write(inteiro[i]);
+      buffer.write(
+        inteiro[i],
+      );
 
       if (restante > 1 &&
           restante % 3 == 1) {
@@ -676,7 +905,8 @@ class _HomePageState extends State<HomePage> {
     }
 
     return '${sinal}R\$ '
-        '${buffer.toString()},${partes[1]}';
+        '${buffer.toString()},'
+        '${partes[1]}';
   }
 
   Widget linhaResumo(
@@ -686,17 +916,20 @@ class _HomePageState extends State<HomePage> {
     return Padding(
       padding:
           const EdgeInsets.symmetric(
-        vertical: 3,
+        vertical: 4,
       ),
       child: Row(
         children: [
           Expanded(
             child: Text(titulo),
           ),
+          const SizedBox(width: 10),
           Text(
             valor,
-            style: const TextStyle(
-              fontWeight: FontWeight.bold,
+            style:
+                const TextStyle(
+              fontWeight:
+                  FontWeight.bold,
             ),
           ),
         ],
@@ -705,7 +938,9 @@ class _HomePageState extends State<HomePage> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(
+    BuildContext context,
+  ) {
     final r = resultado;
 
     return Scaffold(
@@ -720,15 +955,18 @@ class _HomePageState extends State<HomePage> {
         children: [
           const Icon(
             Icons.credit_card,
-            size: 70,
+            size: 65,
           ),
 
-          const SizedBox(height: 20),
+          const SizedBox(
+            height: 18,
+          ),
 
           FilledButton.icon(
-            onPressed: processando
-                ? null
-                : selecionarFatura,
+            onPressed:
+                processando
+                    ? null
+                    : selecionarFatura,
             icon: const Icon(
               Icons.picture_as_pdf,
             ),
@@ -737,7 +975,9 @@ class _HomePageState extends State<HomePage> {
             ),
           ),
 
-          const SizedBox(height: 16),
+          const SizedBox(
+            height: 16,
+          ),
 
           if (processando)
             const Center(
@@ -748,7 +988,9 @@ class _HomePageState extends State<HomePage> {
           Card(
             child: Padding(
               padding:
-                  const EdgeInsets.all(16),
+                  const EdgeInsets.all(
+                16,
+              ),
               child: Text(status),
             ),
           ),
@@ -760,8 +1002,10 @@ class _HomePageState extends State<HomePage> {
                 top: 8,
               ),
               child: Text(
-                'Arquivo: $nomeArquivo',
-                style: const TextStyle(
+                'Arquivo: '
+                '$nomeArquivo',
+                style:
+                    const TextStyle(
                   fontWeight:
                       FontWeight.bold,
                 ),
@@ -769,7 +1013,9 @@ class _HomePageState extends State<HomePage> {
             ),
 
           if (r != null) ...[
-            const SizedBox(height: 24),
+            const SizedBox(
+              height: 24,
+            ),
 
             const Text(
               'Conferência',
@@ -780,7 +1026,9 @@ class _HomePageState extends State<HomePage> {
               ),
             ),
 
-            const SizedBox(height: 10),
+            const SizedBox(
+              height: 10,
+            ),
 
             Card(
               child: Padding(
@@ -792,7 +1040,8 @@ class _HomePageState extends State<HomePage> {
                   children: [
                     linhaResumo(
                       'Total da fatura',
-                      r.totalFatura == null
+                      r.totalFatura ==
+                              null
                           ? 'Não identificado'
                           : dinheiro(
                               r.totalFatura!,
@@ -801,12 +1050,15 @@ class _HomePageState extends State<HomePage> {
 
                     linhaResumo(
                       'Soma dos lançamentos',
-                      dinheiro(r.soma),
+                      dinheiro(
+                        r.soma,
+                      ),
                     ),
 
                     linhaResumo(
                       'Diferença',
-                      r.diferenca == null
+                      r.diferenca ==
+                              null
                           ? 'Não calculada'
                           : dinheiro(
                               r.diferenca!,
@@ -852,20 +1104,28 @@ class _HomePageState extends State<HomePage> {
                         ),
                       ),
 
-                    const SizedBox(height: 12),
+                    const SizedBox(
+                      height: 12,
+                    ),
 
                     Row(
                       children: [
                         Icon(
                           r.conciliada
-                              ? Icons.check_circle
-                              : Icons.warning_amber,
-                          color: r.conciliada
-                              ? Colors.green
-                              : Colors.orange,
+                              ? Icons
+                                  .check_circle
+                              : Icons
+                                  .warning_amber,
+                          color:
+                              r.conciliada
+                                  ? Colors.green
+                                  : Colors
+                                      .orange,
                         ),
 
-                        const SizedBox(width: 8),
+                        const SizedBox(
+                          width: 8,
+                        ),
 
                         Expanded(
                           child: Text(
@@ -875,7 +1135,8 @@ class _HomePageState extends State<HomePage> {
                             style:
                                 const TextStyle(
                               fontWeight:
-                                  FontWeight.bold,
+                                  FontWeight
+                                      .bold,
                             ),
                           ),
                         ),
@@ -886,7 +1147,9 @@ class _HomePageState extends State<HomePage> {
               ),
             ),
 
-            const SizedBox(height: 20),
+            const SizedBox(
+              height: 20,
+            ),
 
             const Text(
               'Lançamentos encontrados',
@@ -897,11 +1160,13 @@ class _HomePageState extends State<HomePage> {
               ),
             ),
 
-            const SizedBox(height: 8),
+            const SizedBox(
+              height: 8,
+            ),
 
             ...r.lancamentos.map(
               (item) {
-                String detalhe =
+                var detalhe =
                     '${item.data} • '
                     '${item.tipo}';
 
@@ -914,19 +1179,25 @@ class _HomePageState extends State<HomePage> {
                 }
 
                 if (item
-                    .categoria.isNotEmpty) {
+                    .categoria
+                    .isNotEmpty) {
                   detalhe +=
-                      '\n${item.categoria}';
+                      '\n'
+                      '${item.categoria}';
                 }
 
                 return Card(
                   child: ListTile(
-                    title:
-                        Text(item.descricao),
-                    subtitle:
-                        Text(detalhe),
+                    title: Text(
+                      item.descricao,
+                    ),
+                    subtitle: Text(
+                      detalhe,
+                    ),
                     trailing: Text(
-                      dinheiro(item.valor),
+                      dinheiro(
+                        item.valor,
+                      ),
                       style:
                           const TextStyle(
                         fontWeight:
@@ -938,33 +1209,70 @@ class _HomePageState extends State<HomePage> {
               },
             ),
 
-            const SizedBox(height: 30),
-
-            if (!r.conciliada)
-              const Card(
-                child: Padding(
-                  padding:
-                      EdgeInsets.all(16),
-                  child: Text(
-                    'O Excel ainda não será '
-                    'liberado porque a soma '
-                    'precisa coincidir exatamente '
-                    'com o total da fatura.',
-                    textAlign:
-                        TextAlign.center,
-                  ),
-                ),
-              ),
+            const SizedBox(
+              height: 25,
+            ),
 
             if (r.conciliada)
+              Card(
+                child: Padding(
+                  padding:
+                      const EdgeInsets.all(
+                    18,
+                  ),
+                  child: Column(
+                    children: [
+                      const Icon(
+                        Icons
+                            .verified,
+                        color:
+                            Colors.green,
+                        size: 40,
+                      ),
+
+                      const SizedBox(
+                        height: 8,
+                      ),
+
+                      const Text(
+                        'Fatura conciliada',
+                        style:
+                            TextStyle(
+                          fontSize: 20,
+                          fontWeight:
+                              FontWeight
+                                  .bold,
+                        ),
+                      ),
+
+                      const SizedBox(
+                        height: 8,
+                      ),
+
+                      Text(
+                        'A soma dos '
+                        '${r.lancamentos.length} '
+                        'lançamentos é igual '
+                        'ao total da fatura.',
+                        textAlign:
+                            TextAlign.center,
+                      ),
+                    ],
+                  ),
+                ),
+              )
+            else
               const Card(
                 child: Padding(
                   padding:
-                      EdgeInsets.all(16),
+                      EdgeInsets.all(
+                    18,
+                  ),
                   child: Text(
-                    '✓ Conciliação concluída. '
-                    'A próxima versão habilitará '
-                    'a exportação do Excel.',
+                    'O Excel continua '
+                    'bloqueado até que a '
+                    'diferença seja '
+                    'R\$ 0,00.',
                     textAlign:
                         TextAlign.center,
                   ),
@@ -972,7 +1280,9 @@ class _HomePageState extends State<HomePage> {
               ),
           ],
 
-          const SizedBox(height: 40),
+          const SizedBox(
+            height: 40,
+          ),
         ],
       ),
     );
