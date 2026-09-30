@@ -11,14 +11,20 @@ void main() {
 class Lancamento {
   final String data;
   final String descricao;
+  final String categoria;
   final double valor;
   final int? parcelaAtual;
   final int? totalParcelas;
+  final String tipo;
+  final String observacao;
 
   Lancamento({
     required this.data,
     required this.descricao,
+    required this.categoria,
     required this.valor,
+    required this.tipo,
+    required this.observacao,
     this.parcelaAtual,
     this.totalParcelas,
   });
@@ -36,12 +42,10 @@ class ResultadoFatura {
     required this.lancamentos,
   });
 
-  double get soma {
-    return lancamentos.fold(
-      0,
-      (anterior, item) => anterior + item.valor,
-    );
-  }
+  double get soma => lancamentos.fold(
+        0.0,
+        (total, item) => total + item.valor,
+      );
 
   double? get diferenca {
     if (totalFatura == null) return null;
@@ -49,7 +53,10 @@ class ResultadoFatura {
   }
 
   int get quantidadeParceladas =>
-      lancamentos.where((item) => item.parcelada).length;
+      lancamentos.where((e) => e.parcelada).length;
+
+  bool get conciliada =>
+      diferenca != null && diferenca!.abs() < 0.01;
 }
 
 class ParserItau {
@@ -59,13 +66,97 @@ class ParserItau {
         .replaceAll(' ', '')
         .trim();
 
-    if (texto.contains(',')) {
-      texto = texto
-          .replaceAll('.', '')
-          .replaceAll(',', '.');
+    bool negativo = false;
+
+    if (texto.startsWith('-')) {
+      negativo = true;
+      texto = texto.substring(1);
     }
 
-    return double.tryParse(texto) ?? 0;
+    texto = texto
+        .replaceAll('.', '')
+        .replaceAll(',', '.');
+
+    final numero = double.tryParse(texto) ?? 0.0;
+
+    return negativo ? -numero : numero;
+  }
+
+  static String normalizar(String texto) {
+    return texto
+        .replaceAll('\u00A0', ' ')
+        .replaceAll(RegExp(r'[ \t]+'), ' ')
+        .trim();
+  }
+
+  static bool linhaIgnorada(String linha) {
+    final l = linha.toLowerCase();
+
+    final termos = [
+      'total da fatura',
+      'pagamento mínimo',
+      'pagamento minimo',
+      'limite de crédito',
+      'limite de credito',
+      'melhor data',
+      'vencimento',
+      'saldo anterior',
+      'total de pagamentos',
+      'total dos lançamentos',
+      'total dos lancamentos',
+      'compras parceladas - próximas faturas',
+      'compras parceladas - proximas faturas',
+      'próximas faturas',
+      'proximas faturas',
+    ];
+
+    return termos.any(l.contains);
+  }
+
+  static bool pareceComplemento(String linha) {
+    if (linha.isEmpty) return false;
+
+    if (RegExp(r'^\d{2}/\d{2}').hasMatch(linha)) {
+      return false;
+    }
+
+    if (RegExp(r'^[\d\.,\-]+\s*$').hasMatch(linha)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  static String categoriaDaLinha(String linha) {
+    final l = linha.toLowerCase();
+
+    const categorias = [
+      'alimentação',
+      'alimentacao',
+      'restaurante',
+      'supermercado',
+      'vestuário',
+      'vestuario',
+      'saúde',
+      'saude',
+      'transporte',
+      'serviços',
+      'servicos',
+      'educação',
+      'educacao',
+      'lazer',
+      'viagem',
+      'casa',
+      'outros',
+    ];
+
+    for (final categoria in categorias) {
+      if (l.contains(categoria)) {
+        return categoria;
+      }
+    }
+
+    return '';
   }
 
   static ResultadoFatura processar(String texto) {
@@ -73,51 +164,109 @@ class ParserItau {
 
     double? totalFatura;
 
+    // ----------------------------
+    // TOTAL DA FATURA
+    // ----------------------------
+
     final expressoesTotal = [
       RegExp(
-        r'total\s+(?:desta\s+)?fatura[^\d]{0,30}([\d\.]+,\d{2})',
+        r'total\s+(?:desta\s+)?fatura[^\d]{0,50}'
+        r'(?:R\$\s*)?([\d\.]+,\d{2})',
         caseSensitive: false,
       ),
       RegExp(
-        r'valor\s+total[^\d]{0,30}([\d\.]+,\d{2})',
-        caseSensitive: false,
-      ),
-      RegExp(
-        r'total\s+dos\s+lançamentos[^\d]{0,30}([\d\.]+,\d{2})',
+        r'valor\s+total[^\d]{0,50}'
+        r'(?:R\$\s*)?([\d\.]+,\d{2})',
         caseSensitive: false,
       ),
     ];
 
     for (final expressao in expressoesTotal) {
-      final resultado = expressao.firstMatch(texto);
+      final match = expressao.firstMatch(texto);
 
-      if (resultado != null) {
-        totalFatura =
-            moedaParaDouble(resultado.group(1)!);
+      if (match != null) {
+        totalFatura = moedaParaDouble(match.group(1)!);
         break;
       }
     }
 
+    // ----------------------------
+    // PREPARAÇÃO DAS LINHAS
+    // ----------------------------
+
     final linhas = texto
+        .replaceAll('\r\n', '\n')
         .replaceAll('\r', '\n')
         .split('\n')
-        .map((linha) => linha.trim())
+        .map(normalizar)
         .where((linha) => linha.isNotEmpty)
         .toList();
 
-    final regexLinha = RegExp(
-      r'^(\d{2}/\d{2})(?:/\d{2,4})?\s+(.+?)\s+'
-      r'(?:(\d{1,2})/(\d{1,2})\s+)?'
-      r'(-?[\d\.]+,\d{2})$',
+    /*
+      Exemplos que queremos reconhecer:
+
+      25/04 JIM.COM* RIZZO 05/12 416,58
+
+      03/08 AMAZON BRSAO PAULOBRA 52,28
+
+      Também aceita ano:
+      03/08/2026 EMPRESA XYZ 100,00
+    */
+
+    final regexCompra = RegExp(
+      r'^(\d{2}/\d{2})(?:/\d{2,4})?\s+'
+      r'(.+?)'
+      r'(?:\s+(\d{1,2})/(\d{1,2}))?'
+      r'\s+(-?[\d\.]+,\d{2})\s*$',
+      caseSensitive: false,
     );
 
-    for (final linha in linhas) {
-      final match = regexLinha.firstMatch(linha);
+    // Evita processar a seção de parcelas futuras.
+    bool ignorarParcelasFuturas = false;
 
-      if (match == null) continue;
+    for (int i = 0; i < linhas.length; i++) {
+      final linha = linhas[i];
+
+      final minuscula = linha.toLowerCase();
+
+      if (minuscula.contains('compras parceladas') &&
+          (minuscula.contains('próximas') ||
+              minuscula.contains('proximas'))) {
+        ignorarParcelasFuturas = true;
+        continue;
+      }
+
+      /*
+        Se depois da seção de parcelas futuras aparecer
+        uma nova seção relevante, podemos voltar a analisar.
+      */
+      if (ignorarParcelasFuturas &&
+          (minuscula.contains('encargos') ||
+              minuscula.contains('produtos e serviços') ||
+              minuscula.contains('produtos e servicos') ||
+              minuscula.contains('transações internacionais') ||
+              minuscula.contains('transacoes internacionais'))) {
+        ignorarParcelasFuturas = false;
+      }
+
+      if (ignorarParcelasFuturas) {
+        continue;
+      }
+
+      if (linhaIgnorada(linha)) {
+        continue;
+      }
+
+      final match = regexCompra.firstMatch(linha);
+
+      if (match == null) {
+        continue;
+      }
 
       final data = match.group(1)!;
-      final descricao = match.group(2)!.trim();
+
+      String descricao =
+          normalizar(match.group(2) ?? '');
 
       final parcelaAtual =
           int.tryParse(match.group(3) ?? '');
@@ -128,26 +277,60 @@ class ParserItau {
       final valor =
           moedaParaDouble(match.group(5)!);
 
-      // Evita capturar algumas linhas de resumo.
-      final descricaoMinuscula =
+      String categoria = '';
+      String observacao = '';
+
+      // --------------------------------
+      // SEGUNDA LINHA DA COMPRA
+      // --------------------------------
+
+      if (i + 1 < linhas.length) {
+        final proxima = linhas[i + 1];
+
+        if (pareceComplemento(proxima) &&
+            !linhaIgnorada(proxima)) {
+          categoria = categoriaDaLinha(proxima);
+
+          observacao = proxima;
+
+          /*
+            Não juntamos o complemento à descrição
+            principal porque queremos preservá-lo
+            separadamente para o futuro Excel.
+          */
+        }
+      }
+
+      String tipo = 'À vista';
+
+      if (parcelaAtual != null &&
+          totalParcelas != null) {
+        tipo = 'Parcelada';
+      }
+
+      final descricaoLower =
           descricao.toLowerCase();
 
-      if (descricaoMinuscula.contains(
-            'total da fatura',
-          ) ||
-          descricaoMinuscula.contains(
-            'pagamento mínimo',
-          )) {
-        continue;
+      if (descricaoLower.contains('iof')) {
+        tipo = 'Encargo / IOF';
+      }
+
+      if (descricaoLower.contains('juros') ||
+          descricaoLower.contains('multa') ||
+          descricaoLower.contains('tarifa')) {
+        tipo = 'Encargo';
       }
 
       lancamentos.add(
         Lancamento(
           data: data,
           descricao: descricao,
+          categoria: categoria,
           valor: valor,
           parcelaAtual: parcelaAtual,
           totalParcelas: totalParcelas,
+          tipo: tipo,
+          observacao: observacao,
         ),
       );
     }
@@ -262,10 +445,15 @@ class _HomePageState extends State<HomePage> {
         if (analise.lancamentos.isEmpty) {
           status =
               'PDF lido, mas nenhum lançamento '
-              'foi reconhecido automaticamente.';
+              'foi reconhecido.';
+        } else if (analise.conciliada) {
+          status =
+              'Fatura processada e conferida. '
+              'Os lançamentos estão conciliados.';
         } else {
           status =
-              'Análise concluída.';
+              'Fatura processada, mas ainda existe '
+              'diferença na conferência.';
         }
       });
     } catch (e) {
@@ -277,7 +465,29 @@ class _HomePageState extends State<HomePage> {
   }
 
   String dinheiro(double valor) {
-    return 'R\$ ${valor.toStringAsFixed(2).replaceAll('.', ',')}';
+    final sinal = valor < 0 ? '-' : '';
+
+    final absoluto = valor.abs();
+
+    final partes =
+        absoluto.toStringAsFixed(2).split('.');
+
+    String inteiro = partes[0];
+
+    final buffer = StringBuffer();
+
+    for (int i = 0; i < inteiro.length; i++) {
+      final restante = inteiro.length - i;
+
+      buffer.write(inteiro[i]);
+
+      if (restante > 1 &&
+          restante % 3 == 1) {
+        buffer.write('.');
+      }
+    }
+
+    return '$sinalR\$ ${buffer.toString()},${partes[1]}';
   }
 
   @override
@@ -317,6 +527,8 @@ class _HomePageState extends State<HomePage> {
             const Center(
               child: CircularProgressIndicator(),
             ),
+
+          const SizedBox(height: 8),
 
           Card(
             child: Padding(
@@ -361,29 +573,80 @@ class _HomePageState extends State<HomePage> {
                     Text(
                       r.totalFatura == null
                           ? 'Total da fatura: não identificado'
-                          : 'Total da fatura: ${dinheiro(r.totalFatura!)}',
+                          : 'Total da fatura: '
+                              '${dinheiro(r.totalFatura!)}',
                     ),
+
+                    const SizedBox(height: 5),
 
                     Text(
                       'Soma dos lançamentos: '
                       '${dinheiro(r.soma)}',
                     ),
 
+                    const SizedBox(height: 5),
+
                     Text(
                       r.diferenca == null
                           ? 'Diferença: não calculada'
-                          : 'Diferença: ${dinheiro(r.diferenca!)}',
+                          : 'Diferença: '
+                              '${dinheiro(r.diferenca!)}',
                     ),
+
+                    const SizedBox(height: 5),
 
                     Text(
                       'Lançamentos encontrados: '
                       '${r.lancamentos.length}',
                     ),
 
+                    const SizedBox(height: 5),
+
                     Text(
                       'Compras parceladas: '
                       '${r.quantidadeParceladas}',
                     ),
+
+                    const SizedBox(height: 12),
+
+                    if (r.conciliada)
+                      const Row(
+                        children: [
+                          Icon(
+                            Icons.check_circle,
+                            color: Colors.green,
+                          ),
+                          SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Fatura conciliada',
+                              style: TextStyle(
+                                fontWeight:
+                                    FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ],
+                      )
+                    else
+                      const Row(
+                        children: [
+                          Icon(
+                            Icons.warning_amber,
+                            color: Colors.orange,
+                          ),
+                          SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Conferência pendente',
+                              style: TextStyle(
+                                fontWeight:
+                                    FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                   ],
                 ),
               ),
@@ -402,27 +665,43 @@ class _HomePageState extends State<HomePage> {
             const SizedBox(height: 8),
 
             ...r.lancamentos.map(
-              (item) => Card(
-                child: ListTile(
-                  title: Text(item.descricao),
+              (item) {
+                String detalhe =
+                    '${item.data} • ${item.tipo}';
 
-                  subtitle: Text(
-                    item.parcelada
-                        ? '${item.data} • '
-                          '${item.parcelaAtual}/'
-                          '${item.totalParcelas}'
-                        : '${item.data} • À vista',
-                  ),
+                if (item.parcelada) {
+                  detalhe +=
+                      ' • ${item.parcelaAtual}'
+                      '/${item.totalParcelas}';
+                }
 
-                  trailing: Text(
-                    dinheiro(item.valor),
-                    style: const TextStyle(
-                      fontWeight:
-                          FontWeight.bold,
+                if (item.categoria.isNotEmpty) {
+                  detalhe +=
+                      '\nCategoria: '
+                      '${item.categoria}';
+                }
+
+                if (item.observacao.isNotEmpty) {
+                  detalhe +=
+                      '\n${item.observacao}';
+                }
+
+                return Card(
+                  child: ListTile(
+                    title: Text(
+                      item.descricao,
+                    ),
+                    subtitle: Text(detalhe),
+                    trailing: Text(
+                      dinheiro(item.valor),
+                      style: const TextStyle(
+                        fontWeight:
+                            FontWeight.bold,
+                      ),
                     ),
                   ),
-                ),
-              ),
+                );
+              },
             ),
           ],
         ],
