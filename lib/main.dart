@@ -487,7 +487,7 @@ class _HomePageState extends State<HomePage> {
       }
     }
 
-    return '$sinalR\$ ${buffer.toString()},${partes[1]}';
+    return '${sinal}R\$ ${buffer.toString()},${partes[1]}';
   }
 
   @override
