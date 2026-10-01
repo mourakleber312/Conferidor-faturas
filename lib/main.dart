@@ -378,114 +378,436 @@ class ParserItau {
   // ==========================================================
 
   static List<Lancamento> lerComprasFragmentadas(
-    String texto,
-  ) {
-    final resultado = <Lancamento>[];
+  String texto,
+) {
+  final resultado = <Lancamento>[];
 
-    final c = compactar(texto);
+  // ========================================================
+  // 1. LOCALIZA A SEÇÃO MESMO COM PALAVRAS FRAGMENTADAS
+  // ========================================================
 
-    const inicioAlvo = 'lancamentos:comprasesaques';
+  final textoCompacto = compactar(texto);
 
-    var inicio = c.indexOf(inicioAlvo);
+  int inicio = textoCompacto.indexOf(
+    'lancamentos:comprasesaques',
+  );
 
-    // Alguns PDFs perdem os dois pontos.
-    if (inicio < 0) {
-      inicio = c.indexOf('lancamentoscomprasesaques');
-    }
-
-    if (inicio < 0) return resultado;
-
-    final possiveisFins = <int>[];
-
-    for (final alvo in [
-      'lancamentosnocartao',
-      'lancamentosinternacionais',
-      'lancamentos:produtoseservicos',
-      'comprasparceladas-proximasfaturas',
-      'comprasparceladasproximasfaturas',
-      'totaldoslancamentosatuais',
-    ]) {
-      final p = c.indexOf(alvo, inicio + 10);
-
-      if (p > inicio) possiveisFins.add(p);
-    }
-
-    if (possiveisFins.isEmpty) return resultado;
-
-    possiveisFins.sort();
-
-    final fim = possiveisFins.first;
-
-    var secao = c.substring(inicio, fim);
-
-    secao = secao
-        .replaceAll('lancamentos:comprasesaques', '')
-        .replaceAll('lancamentoscomprasesaques', '')
-        .replaceAll('dataestabelecimentovaloremr\$', '')
-        .replaceAll('continua...', '');
-
-    const categorias =
-        r'(restaurante|supermercado|vestuario|saude|'
-        r'servicos|outros|lazer|eletronicos|hotel|'
-        r'health|money|supermarket)';
-
-    final regex = RegExp(
-      r'(\d{2}/\d{2})'
-      r'(.+?)'
-      r'(?:(\d{2})/(\d{2}))?'
-      r'(-?[\d\.]+,\d{2})'
-      + categorias,
+  if (inicio < 0) {
+    inicio = textoCompacto.indexOf(
+      'lancamentoscomprasesaques',
     );
+  }
 
-    for (final m in regex.allMatches(secao)) {
-      var descricao = m.group(2) ?? '';
-
-      int? atual = int.tryParse(m.group(3) ?? '');
-      int? total = int.tryParse(m.group(4) ?? '');
-
-      // Segurança para parcela que tenha ficado
-      // grudada no final da descrição.
-      final parcelaNoFim = RegExp(
-        r'(\d{2})/(\d{2})$',
-      ).firstMatch(descricao);
-
-      if (parcelaNoFim != null) {
-        atual = int.tryParse(parcelaNoFim.group(1)!);
-        total = int.tryParse(parcelaNoFim.group(2)!);
-
-        descricao = descricao
-            .substring(0, parcelaNoFim.start);
-      }
-
-      final valor = m.group(5);
-      final categoria = m.group(6);
-
-      if (descricao.isEmpty ||
-          valor == null ||
-          categoria == null) {
-        continue;
-      }
-
-      resultado.add(
-        Lancamento(
-          data: m.group(1) ?? '',
-          descricao: descricao,
-          categoria: normalizarCategoria(categoria),
-          valor: moedaParaDouble(valor),
-          parcelaAtual: atual,
-          totalParcelas: total,
-          tipo: atual != null && total != null
-              ? 'Parcelada'
-              : 'À vista',
-          observacoes:
-              'Descrição reconstruída de PDF fragmentado',
-        ),
-      );
-    }
-
+  if (inicio < 0) {
     return resultado;
   }
 
+  final possiveisFins = <int>[];
+
+  final marcadoresFim = [
+    'lancamentosnocartao',
+    'lancamentosinternacionais',
+    'lancamentos:produtoseservicos',
+    'lancamentosprodutoseservicos',
+    'comprasparceladas-proximasfaturas',
+    'comprasparceladasproximasfaturas',
+    'totaldoslancamentosatuais',
+  ];
+
+  for (final marcador in marcadoresFim) {
+    final p = textoCompacto.indexOf(
+      marcador,
+      inicio + 10,
+    );
+
+    if (p > inicio) {
+      possiveisFins.add(p);
+    }
+  }
+
+  if (possiveisFins.isEmpty) {
+    return resultado;
+  }
+
+  possiveisFins.sort();
+
+  final fim = possiveisFins.first;
+
+  var secao = textoCompacto.substring(
+    inicio,
+    fim,
+  );
+
+  // ========================================================
+  // 2. LIMPEZA DE CABEÇALHOS
+  // ========================================================
+
+  secao = secao
+      .replaceAll(
+        'lancamentos:comprasesaques',
+        '',
+      )
+      .replaceAll(
+        'lancamentoscomprasesaques',
+        '',
+      )
+      .replaceAll(
+        'dataestabelecimentovaloremr\$',
+        '',
+      )
+      .replaceAll(
+        'dataestabelecimentovaloremr',
+        '',
+      )
+      .replaceAll(
+        'continua...',
+        '',
+      );
+
+  // ========================================================
+  // 3. CATEGORIAS
+  //
+  // Diferente da versão anterior, categoria NÃO é mais
+  // obrigatória para reconhecer uma compra.
+  // ========================================================
+
+  const categorias = [
+    'restaurante',
+    'supermercado',
+    'vestuario',
+    'saude',
+    'servicos',
+    'outros',
+    'lazer',
+    'eletronicos',
+    'hotel',
+    'health',
+    'money',
+    'supermarket',
+  ];
+
+  bool ehCategoria(String texto) {
+    for (final categoria in categorias) {
+      if (texto == categoria) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  String categoriaEncontrada(
+    String trecho,
+  ) {
+    for (final categoria in categorias) {
+      if (trecho.contains(categoria)) {
+        return normalizarCategoria(
+          categoria,
+        );
+      }
+    }
+
+    return '';
+  }
+
+  // ========================================================
+  // 4. LOCALIZA TODAS AS DATAS
+  //
+  // A data passa a ser a âncora principal.
+  // Cada bloco começa numa data e termina na próxima.
+  // ========================================================
+
+  final regexData = RegExp(
+    r'\d{2}/\d{2}',
+  );
+
+  final datas =
+      regexData.allMatches(secao).toList();
+
+  if (datas.isEmpty) {
+    return resultado;
+  }
+
+  for (int i = 0; i < datas.length; i++) {
+    final dataMatch = datas[i];
+
+    final inicioBloco =
+        dataMatch.start;
+
+    final fimBloco =
+        i + 1 < datas.length
+            ? datas[i + 1].start
+            : secao.length;
+
+    if (fimBloco <= inicioBloco) {
+      continue;
+    }
+
+    var bloco = secao.substring(
+      inicioBloco,
+      fimBloco,
+    );
+
+    final data =
+        dataMatch.group(0) ?? '';
+
+    if (data.isEmpty) {
+      continue;
+    }
+
+    // Remove a data inicial.
+    bloco = bloco.substring(
+      data.length,
+    );
+
+    if (bloco.isEmpty) {
+      continue;
+    }
+
+    // ======================================================
+    // 5. ENCONTRA O VALOR
+    //
+    // Pegamos o último valor monetário do bloco.
+    // Isso evita confundir números presentes na descrição.
+    // ======================================================
+
+    final valores = RegExp(
+      r'-?\d[\d\.]*,\d{2}',
+    ).allMatches(bloco).toList();
+
+    if (valores.isEmpty) {
+      continue;
+    }
+
+    final valorMatch =
+        valores.last;
+
+    final textoValor =
+        valorMatch.group(0);
+
+    if (textoValor == null) {
+      continue;
+    }
+
+    final valor =
+        moedaParaDouble(textoValor);
+
+    var antesValor = bloco.substring(
+      0,
+      valorMatch.start,
+    );
+
+    var depoisValor = bloco.substring(
+      valorMatch.end,
+    );
+
+    // ======================================================
+    // 6. CATEGORIA
+    // ======================================================
+
+    String categoria =
+        categoriaEncontrada(
+      depoisValor,
+    );
+
+    if (categoria.isEmpty) {
+      categoria =
+          categoriaEncontrada(
+        antesValor,
+      );
+    }
+
+    // Remove categorias da descrição.
+    for (final cat in categorias) {
+      antesValor =
+          antesValor.replaceAll(
+        cat,
+        '',
+      );
+
+      depoisValor =
+          depoisValor.replaceAll(
+        cat,
+        '',
+      );
+    }
+
+    // ======================================================
+    // 7. PARCELA
+    //
+    // Como compactar() já removeu os espaços:
+    //
+    // 06/1 0 -> 06/10
+    // 01/2 1 -> 01/21
+    //
+    // Portanto agora conseguimos reconhecer normalmente.
+    // ======================================================
+
+    int? parcelaAtual;
+    int? totalParcelas;
+
+    final parcelas =
+        RegExp(
+      r'(\d{1,2})/(\d{1,2})',
+    ).allMatches(antesValor).toList();
+
+    if (parcelas.isNotEmpty) {
+      final parcela =
+          parcelas.last;
+
+      final pAtual =
+          int.tryParse(
+        parcela.group(1) ?? '',
+      );
+
+      final pTotal =
+          int.tryParse(
+        parcela.group(2) ?? '',
+      );
+
+      // Proteções importantes:
+      //
+      // parcela atual precisa ser >= 1
+      // total precisa ser >= parcela atual
+      // aceitamos planos longos como 01/21
+      //
+      // O limite de 48 evita interpretar números
+      // absurdos como parcelamento.
+      if (pAtual != null &&
+          pTotal != null &&
+          pAtual >= 1 &&
+          pTotal >= pAtual &&
+          pTotal <= 48) {
+        parcelaAtual = pAtual;
+        totalParcelas = pTotal;
+
+        antesValor =
+            antesValor.replaceRange(
+          parcela.start,
+          parcela.end,
+          '',
+        );
+      }
+    }
+
+    // ======================================================
+    // 8. DESCRIÇÃO
+    // ======================================================
+
+    var descricao =
+        limparEspacos(
+      antesValor,
+    );
+
+    // compactar() remove espaços da descrição.
+    // Não conseguimos recriar perfeitamente todos eles,
+    // mas mantemos o conteúdo integral.
+    descricao = descricao.trim();
+
+    if (descricao.isEmpty) {
+      continue;
+    }
+
+    // Evita interpretar cabeçalhos como compras.
+    final descricaoCompacta =
+        compactar(descricao);
+
+    if (descricaoCompacta.contains(
+          'lancamentosnocartao',
+        ) ||
+        descricaoCompacta.contains(
+          'totaldoslancamentos',
+        ) ||
+        descricaoCompacta.contains(
+          'comprasparceladasproximas',
+        )) {
+      continue;
+    }
+
+    // ======================================================
+    // 9. EVITA DATAS QUE ERAM PARCELAS
+    //
+    // Uma data de compra deve ter mês entre 01 e 12.
+    // ======================================================
+
+    final partesData =
+        data.split('/');
+
+    if (partesData.length != 2) {
+      continue;
+    }
+
+    final dia =
+        int.tryParse(partesData[0]);
+
+    final mes =
+        int.tryParse(partesData[1]);
+
+    if (dia == null ||
+        mes == null ||
+        dia < 1 ||
+        dia > 31 ||
+        mes < 1 ||
+        mes > 12) {
+      continue;
+    }
+
+    // ======================================================
+    // 10. ADICIONA COMPRA
+    // ======================================================
+
+    resultado.add(
+      Lancamento(
+        data: data,
+        descricao: descricao,
+        categoria: categoria,
+        valor: valor,
+        parcelaAtual:
+            parcelaAtual,
+        totalParcelas:
+            totalParcelas,
+        tipo:
+            parcelaAtual != null &&
+                    totalParcelas != null
+                ? 'Parcelada'
+                : 'À vista',
+        observacoes:
+            categoria.isEmpty
+                ? 'Categoria não identificada; '
+                    'compra reconstruída pelo padrão '
+                    'data/descrição/valor'
+                : 'Compra reconstruída de '
+                    'PDF fragmentado',
+      ),
+    );
+  }
+
+  // ========================================================
+  // 11. REMOVE DUPLICIDADES
+  // ========================================================
+
+  final unicos =
+      <Lancamento>[];
+
+  final chaves =
+      <String>{};
+
+  for (final item in resultado) {
+    final chave =
+        '${item.data}|'
+        '${compactar(item.descricao)}|'
+        '${item.valor.toStringAsFixed(2)}|'
+        '${item.parcelaAtual ?? ''}|'
+        '${item.totalParcelas ?? ''}';
+
+    if (!chaves.contains(chave)) {
+      chaves.add(chave);
+      unicos.add(item);
+    }
+  }
+
+  return unicos;
+}
   // ==========================================================
   // ESCOLHA DO MELHOR PARSER
   // ==========================================================
