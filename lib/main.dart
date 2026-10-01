@@ -45,61 +45,77 @@ class ResultadoFatura {
   final double? totalCartaoInformado;
   final double? totalInternacionalInformado;
   final double? totalServicosInformado;
-  final double? totalEncargosInformado;
 
   final String vencimento;
   final String cartao;
 
   final List<Lancamento> lancamentos;
+  final List<Lancamento> compras;
   final List<String> alertas;
 
   ResultadoFatura({
     required this.totalFatura,
     required this.lancamentos,
+    required this.compras,
     this.totalCartaoInformado,
     this.totalInternacionalInformado,
     this.totalServicosInformado,
-    this.totalEncargosInformado,
     this.vencimento = '',
     this.cartao = '',
     this.alertas = const [],
   });
 
-  double get soma {
-    return lancamentos.fold(
-      0.0,
-      (total, item) => total + item.valor,
-    );
-  }
+  double get soma => lancamentos.fold(
+        0.0,
+        (s, e) => s + e.valor,
+      );
+
+  double get somaCompras => compras.fold(
+        0.0,
+        (s, e) => s + e.valor,
+      );
 
   double? get diferenca {
     if (totalFatura == null) return null;
     return totalFatura! - soma;
   }
 
-  int get quantidadeParceladas {
-    return lancamentos.where((e) => e.parcelada).length;
+  double? get diferencaCartao {
+    if (totalCartaoInformado == null) return null;
+    return totalCartaoInformado! - somaCompras;
   }
 
-  bool get conciliada {
-    if (totalFatura == null) return false;
-    if (lancamentos.isEmpty) return false;
-    if (diferenca == null) return false;
+  int get quantidadeParceladas =>
+      compras.where((e) => e.parcelada).length;
 
-    return diferenca!.abs() < 0.01;
-  }
+  bool get comprasReconstruidas {
+    if (compras.isEmpty) return false;
 
-  bool get falhaLeitura {
-    return totalFatura == null || lancamentos.isEmpty;
-  }
-
-  String get status {
-    if (falhaLeitura) {
-      return 'FALHA DE LEITURA';
+    if (totalCartaoInformado != null) {
+      return (totalCartaoInformado! - somaCompras).abs() < 0.02;
     }
 
-    if (conciliada) {
-      return 'CONCILIADA';
+    return true;
+  }
+
+  bool get totalConciliado {
+    if (totalFatura == null || diferenca == null) return false;
+    return diferenca!.abs() < 0.02;
+  }
+
+  bool get conciliada =>
+      totalConciliado && comprasReconstruidas;
+
+  bool get falhaLeitura =>
+      totalFatura == null && compras.isEmpty;
+
+  String get status {
+    if (falhaLeitura) return 'FALHA DE LEITURA';
+
+    if (conciliada) return 'CONCILIADA';
+
+    if (totalConciliado && !comprasReconstruidas) {
+      return 'INCOMPLETA';
     }
 
     return 'DIVERGENTE';
@@ -117,14 +133,10 @@ class FaturaProcessada {
 }
 
 // ============================================================
-// PARSER ITAÚ
+// PARSER
 // ============================================================
 
 class ParserItau {
-  // ----------------------------------------------------------
-  // UTILIDADES
-  // ----------------------------------------------------------
-
   static String semAcentos(String texto) {
     return texto
         .replaceAll(RegExp('[áàãâäÁÀÃÂÄ]'), 'a')
@@ -138,7 +150,7 @@ class ParserItau {
   static String limparEspacos(String texto) {
     return texto
         .replaceAll('\u00A0', ' ')
-        .replaceAll(RegExp(r'[ \t]+'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
   }
 
@@ -149,608 +161,459 @@ class ParserItau {
   }
 
   static double moedaParaDouble(String valor) {
-    var texto = valor
+    var t = valor
         .replaceAll('R\$', '')
         .replaceAll(' ', '')
         .trim();
 
     bool negativo = false;
 
-    if (texto.startsWith('-')) {
+    if (t.startsWith('-')) {
       negativo = true;
-      texto = texto.substring(1);
+      t = t.substring(1);
     }
 
-    texto = texto
-        .replaceAll('.', '')
-        .replaceAll(',', '.');
+    t = t.replaceAll('.', '').replaceAll(',', '.');
 
-    final numero = double.tryParse(texto) ?? 0.0;
+    final n = double.tryParse(t) ?? 0.0;
 
-    return negativo ? -numero : numero;
+    return negativo ? -n : n;
   }
 
-  static String normalizarValor(String texto) {
-    return texto
-        .replaceAll(RegExp(r'\s+'), '')
-        .replaceAll('R\$', '');
-  }
-
-  static String normalizarData(String data) {
-    var d = data.replaceAll(' ', '');
-
-    final partes = d.split('/');
-
-    if (partes.length != 2) {
-      return d;
-    }
-
-    final dia =
-        partes[0].padLeft(2, '0');
-
-    final mes =
-        partes[1].padLeft(2, '0');
-
-    return '$dia/$mes';
-  }
-
-  static String normalizarParcela(String parcela) {
-    return parcela.replaceAll(' ', '');
-  }
-
-  static double? primeiroValorDepois(
-    String texto,
-    RegExp marcador,
-  ) {
-    final match = marcador.firstMatch(texto);
-
-    if (match == null) return null;
-
-    final resto = texto.substring(match.end);
-
-    final valor = RegExp(
-      r'-?\s*\d[\d\.\s]*,\s*\d{2}',
-    ).firstMatch(resto);
-
-    if (valor == null) return null;
-
-    return moedaParaDouble(
-      normalizarValor(valor.group(0)!),
-    );
-  }
-
-  static String procurarVencimento(String texto) {
-    final regex = RegExp(
-      r'Vencimento\s*:\s*(\d{2}/\d{2}/\d{4})',
-      caseSensitive: false,
-    );
-
-    final m = regex.firstMatch(texto);
-
-    return m?.group(1) ?? '';
-  }
-
-  static String procurarCartao(String texto) {
-    final regex = RegExp(
-      r'Cart[aã]o\s+([0-9Xx\.\s]+)',
-      caseSensitive: false,
-    );
-
-    final m = regex.firstMatch(texto);
-
-    if (m == null) return '';
-
-    return limparEspacos(
-      m.group(1) ?? '',
-    );
-  }
-
-  // ----------------------------------------------------------
-  // LOCALIZAÇÃO FLEXÍVEL DE TÍTULOS
-  // ----------------------------------------------------------
-
-  static int localizarTitulo(
-    String texto,
-    String tituloCompactado, {
-    int inicio = 0,
-  }) {
-    if (inicio >= texto.length) {
-      return -1;
-    }
-
-    final alvo =
-        compactar(tituloCompactado);
-
-    final limite =
-        texto.length;
-
-    const tamanhoJanela = 160;
-
-    for (int i = inicio;
-        i < limite;
-        i++) {
-      final fim =
-          (i + tamanhoJanela < limite)
-              ? i + tamanhoJanela
-              : limite;
-
-      final trecho =
-          compactar(texto.substring(i, fim));
-
-      if (trecho.startsWith(alvo)) {
-        return i;
-      }
-    }
-
-    return -1;
-  }
-
-  static int localizarPrimeiroDe(
-    String texto,
-    List<String> titulos, {
-    int inicio = 0,
-  }) {
-    int melhor = -1;
-
-    for (final titulo in titulos) {
-      final pos = localizarTitulo(
-        texto,
-        titulo,
-        inicio: inicio,
-      );
-
-      if (pos >= 0 &&
-          (melhor < 0 || pos < melhor)) {
-        melhor = pos;
-      }
-    }
-
-    return melhor;
-  }
-
-  // ----------------------------------------------------------
-  // CATEGORIAS
-  // ----------------------------------------------------------
-
-  static const List<String> categoriasBase = [
-    'restaurante',
-    'supermercado',
-    'vestuario',
-    'saude',
-    'servicos',
-    'outros',
-    'lazer',
-    'eletronicos',
-    'hotel',
-    'health',
-    'money',
-    'supermarket',
-    'transporte',
-    'educacao',
-  ];
-
-  static String? detectarCategoria(
-    String linha,
-  ) {
-    final c = compactar(linha);
-
-    for (final categoria
-        in categoriasBase) {
-      if (c.contains(categoria)) {
-        return normalizarCategoria(
-          categoria,
-        );
-      }
-    }
-
-    return null;
-  }
-
-  static String normalizarCategoria(
-    String categoria,
-  ) {
-    final c =
-        semAcentos(categoria).toLowerCase();
+  static String normalizarCategoria(String categoria) {
+    final c = semAcentos(categoria).toLowerCase();
 
     switch (c) {
       case 'vestuario':
         return 'vestuário';
-
       case 'saude':
       case 'health':
         return 'saúde';
-
       case 'servicos':
       case 'money':
         return 'serviços';
-
       case 'eletronicos':
         return 'eletrônicos';
-
       case 'supermarket':
         return 'supermercado';
-
-      case 'educacao':
-        return 'educação';
-
       default:
         return c;
     }
   }
 
-  // ----------------------------------------------------------
-  // NORMALIZAÇÃO DAS LINHAS
-  // ----------------------------------------------------------
+  static double? procurarValor(
+    String texto,
+    RegExp regex,
+  ) {
+    final m = regex.firstMatch(texto);
 
-  static List<String> prepararLinhas(
+    if (m == null || m.group(1) == null) return null;
+
+    return moedaParaDouble(m.group(1)!);
+  }
+
+  // ==========================================================
+  // TOTAL DA FATURA
+  // ==========================================================
+
+  static double? procurarTotalFatura(String texto) {
+    final normal = procurarValor(
+      texto.replaceAll('\n', ''),
+      RegExp(
+        r'Total desta fatura\s*R?\$?\s*([\d\.]+,\d{2})',
+        caseSensitive: false,
+      ),
+    );
+
+    if (normal != null) return normal;
+
+    // Fallback para texto fragmentado.
+    final c = compactar(texto);
+
+    final m = RegExp(
+      r'totaldestafatura(?:r\$)?([\d\.]+,\d{2})',
+    ).firstMatch(c);
+
+    if (m != null) {
+      return moedaParaDouble(m.group(1)!);
+    }
+
+    return null;
+  }
+
+  // ==========================================================
+  // SUBTOTAIS
+  // ==========================================================
+
+  static double? procurarSubtotalCompactado(
+    String texto,
+    String marcador,
+  ) {
+    final c = compactar(texto);
+    final alvo = compactar(marcador);
+
+    final pos = c.indexOf(alvo);
+
+    if (pos < 0) return null;
+
+    final depois = c.substring(pos + alvo.length);
+
+    final m = RegExp(
+      r'-?[\d\.]+,\d{2}',
+    ).firstMatch(depois);
+
+    if (m == null) return null;
+
+    return moedaParaDouble(m.group(0)!);
+  }
+
+  // ==========================================================
+  // PARSER DE COMPRAS - MÉTODO ORIGINAL
+  // ==========================================================
+
+  static List<Lancamento> lerComprasOriginal(
     String texto,
   ) {
-    var t = texto
-        .replaceAll('\r', '\n')
-        .replaceAll('\u00A0', ' ');
+    final resultado = <Lancamento>[];
 
-    final originais =
-        t.split('\n');
+    final achatado =
+        texto.replaceAll('\r', '').replaceAll('\n', '');
 
-    final linhas = <String>[];
+    final inicio =
+        achatado.indexOf('Lançamentos: compras e saques');
 
-    for (var linha in originais) {
-      linha = limparEspacos(linha);
+    final fim =
+        achatado.indexOf('Lançamentos no cartão');
 
-      if (linha.isEmpty) continue;
-
-      linhas.add(linha);
-    }
-
-    return linhas;
-  }
-
-  static bool linhaEhCabecalho(
-    String linha,
-  ) {
-    final c = compactar(linha);
-
-    if (c.isEmpty) return true;
-
-    return c.contains(
-          'dataestabelecimentovaloremr',
-        ) ||
-        c == 'data' ||
-        c == 'estabelecimento' ||
-        c.contains(
-          'lancamentoscomprasesaques',
-        ) ||
-        c.contains(
-          'comprasparceladasproximasfaturas',
-        ) ||
-        c.contains(
-          'pagamentosefetuados',
-        ) ||
-        c.contains('klebermoura') ||
-        c == 'continua...';
-  }
-
-  // ----------------------------------------------------------
-  // EXTRAÇÃO DE TRANSAÇÃO
-  // ----------------------------------------------------------
-
-  static Map<String, dynamic>?
-      extrairTransacaoDaLinha(
-    String linha,
-  ) {
-    var l = limparEspacos(linha);
-
-    // Corrige datas fragmentadas:
-    // 27/0 7 -> 27/07
-    l = l.replaceAllMapped(
-      RegExp(
-        r'(\d{1,2})\s*/\s*(\d)\s+(\d)',
-      ),
-      (m) =>
-          '${m.group(1)}/${m.group(2)}${m.group(3)}',
-    );
-
-    // Corrige parcelas fragmentadas:
-    // 06/1 0 -> 06/10
-    l = l.replaceAllMapped(
-      RegExp(
-        r'(\d{1,2})\s*/\s*(\d)\s+(\d)',
-      ),
-      (m) =>
-          '${m.group(1)}/${m.group(2)}${m.group(3)}',
-    );
-
-    // Corrige valor:
-    // 75 ,57 -> 75,57
-    // 159 ,00 -> 159,00
-    l = l.replaceAllMapped(
-      RegExp(
-        r'(\d)\s+,\s*(\d{2})',
-      ),
-      (m) =>
-          '${m.group(1)},${m.group(2)}',
-    );
-
-    final dataMatch = RegExp(
-      r'^(\d{1,2}/\d{1,2})\s+',
-    ).firstMatch(l);
-
-    if (dataMatch == null) {
-      return null;
-    }
-
-    final data =
-        normalizarData(dataMatch.group(1)!);
-
-    var resto =
-        l.substring(dataMatch.end).trim();
-
-    final valorMatch = RegExp(
-      r'(-?\d[\d\.]*,\d{2})(?!.*\d[\d\.]*,\d{2})',
-    ).firstMatch(resto);
-
-    if (valorMatch == null) {
-      return null;
-    }
-
-    final valor = moedaParaDouble(
-      valorMatch.group(1)!,
-    );
-
-    var antesValor = resto
-        .substring(0, valorMatch.start)
-        .trim();
-
-    int? parcelaAtual;
-    int? totalParcelas;
-
-    final parcelaMatch = RegExp(
-      r'(\d{1,2})\s*/\s*(\d{1,2})\s*$',
-    ).firstMatch(antesValor);
-
-    if (parcelaMatch != null) {
-      parcelaAtual =
-          int.tryParse(parcelaMatch.group(1)!);
-
-      totalParcelas =
-          int.tryParse(parcelaMatch.group(2)!);
-
-      antesValor = antesValor
-          .substring(0, parcelaMatch.start)
-          .trim();
-    }
-
-    if (antesValor.isEmpty) {
-      return null;
-    }
-
-    return {
-      'data': data,
-      'descricao': antesValor,
-      'valor': valor,
-      'parcelaAtual': parcelaAtual,
-      'totalParcelas': totalParcelas,
-    };
-  }
-
-  // ----------------------------------------------------------
-  // COMPRAS E SAQUES
-  // ----------------------------------------------------------
-
-  static List<Lancamento> lerCompras(
-    String texto,
-  ) {
-    final resultado =
-        <Lancamento>[];
-
-    final inicio = localizarPrimeiroDe(
-      texto,
-      [
-        'Lançamentos: compras e saques',
-        'Lancamentos: compras e saques',
-      ],
-    );
-
-    if (inicio < 0) {
+    if (inicio < 0 || fim <= inicio) {
       return resultado;
     }
 
-    var fim = localizarPrimeiroDe(
-      texto,
-      [
-        'Lançamentos no cartão',
-        'Lancamentos no cartao',
-        'Lançamentos internacionais',
-        'Lancamentos internacionais',
-        'Lançamentos: produtos e serviços',
-        'Lancamentos: produtos e servicos',
-        'Compras parceladas - próximas faturas',
-        'Compras parceladas proximas faturas',
-        'Total dos lançamentos atuais',
-        'Total dos lancamentos atuais',
-      ],
-      inicio: inicio + 10,
+    var secao = achatado.substring(inicio, fim);
+
+    secao = secao.replaceAll(
+      RegExp(
+        r'Lançamentos:\s*compras\s*e\s*saques',
+        caseSensitive: false,
+      ),
+      '',
     );
 
-    if (fim < 0) {
-      fim = texto.length;
-    }
+    secao = secao.replaceAll(
+      RegExp(
+        r'DATAESTABELECIMENTOVALOR\s*EM\s*R\$',
+        caseSensitive: false,
+      ),
+      '',
+    );
 
-    final secao =
-        texto.substring(inicio, fim);
+    secao = secao.replaceAll('continua...', '');
 
-    final linhas =
-        prepararLinhas(secao);
+    final categorias =
+        r'(restaurante|supermercado|vestuário|vestuario|'
+        r'saúde|saude|serviços|servicos|outros|lazer|'
+        r'eletronicos|eletrônicos|hotel|health|money|'
+        r'supermarket)';
 
-    Lancamento? pendente;
+    final regex = RegExp(
+      r'(\d{2}/\d{2})'
+      r'(.+?)'
+      r'(?:\s(\d{2})/(\d{2}))?'
+      r'(-?[\d\.]+,\d{2})'
+      + categorias,
+      caseSensitive: false,
+    );
 
-    for (int i = 0;
-        i < linhas.length;
-        i++) {
-      final linha = linhas[i];
+    for (final m in regex.allMatches(secao)) {
+      var descricao = limparEspacos(m.group(2) ?? '');
 
-      if (linhaEhCabecalho(linha)) {
+      int? atual = int.tryParse(m.group(3) ?? '');
+      int? total = int.tryParse(m.group(4) ?? '');
+
+      final parcelaDescricao = RegExp(
+        r'\s(\d{2})/(\d{2})$',
+      ).firstMatch(descricao);
+
+      if (parcelaDescricao != null) {
+        atual = int.tryParse(parcelaDescricao.group(1)!);
+        total = int.tryParse(parcelaDescricao.group(2)!);
+
+        descricao = descricao
+            .substring(0, parcelaDescricao.start)
+            .trim();
+      }
+
+      final valor = m.group(5);
+      final categoria = m.group(6);
+
+      if (valor == null ||
+          categoria == null ||
+          descricao.isEmpty) {
         continue;
       }
 
-      final transacao =
-          extrairTransacaoDaLinha(linha);
-
-      if (transacao != null) {
-        if (pendente != null) {
-          resultado.add(pendente);
-          pendente = null;
-        }
-
-        String categoria = '';
-
-        if (i + 1 < linhas.length) {
-          categoria =
-              detectarCategoria(
-                    linhas[i + 1],
-                  ) ??
-                  '';
-        }
-
-        final pa =
-            transacao['parcelaAtual'] as int?;
-
-        final tp =
-            transacao['totalParcelas'] as int?;
-
-        pendente = Lancamento(
-          data: transacao['data'],
-          descricao: limparEspacos(
-            transacao['descricao'],
-          ),
-          categoria: categoria,
-          valor: transacao['valor'],
-          parcelaAtual: pa,
-          totalParcelas: tp,
-          tipo: pa != null && tp != null
+      resultado.add(
+        Lancamento(
+          data: m.group(1) ?? '',
+          descricao: descricao,
+          categoria: normalizarCategoria(categoria),
+          valor: moedaParaDouble(valor),
+          parcelaAtual: atual,
+          totalParcelas: total,
+          tipo: atual != null && total != null
               ? 'Parcelada'
               : 'À vista',
-        );
-
-        continue;
-      }
-
-      if (pendente != null &&
-          pendente.categoria.isEmpty) {
-        final categoria =
-            detectarCategoria(linha);
-
-        if (categoria != null) {
-          pendente = Lancamento(
-            data: pendente.data,
-            descricao:
-                pendente.descricao,
-            categoria: categoria,
-            valor: pendente.valor,
-            parcelaAtual:
-                pendente.parcelaAtual,
-            totalParcelas:
-                pendente.totalParcelas,
-            tipo: pendente.tipo,
-            observacoes:
-                pendente.observacoes,
-          );
-        }
-      }
-    }
-
-    if (pendente != null) {
-      resultado.add(pendente);
+        ),
+      );
     }
 
     return resultado;
   }
 
-  // ----------------------------------------------------------
-  // INTERNACIONAL
-  // ----------------------------------------------------------
+  // ==========================================================
+  // PARSER DE COMPRAS - PDF FRAGMENTADO
+  //
+  // Remove espaços do bloco para reconstruir datas,
+  // parcelas, valores e categorias quebradas pelo PDF.
+  // ==========================================================
 
-  static List<Lancamento> lerInternacional(
+  static List<Lancamento> lerComprasFragmentadas(
     String texto,
   ) {
-    final resultado =
-        <Lancamento>[];
+    final resultado = <Lancamento>[];
 
-    final inicio = localizarPrimeiroDe(
-      texto,
-      [
-        'Lançamentos internacionais',
-        'Lancamentos internacionais',
-      ],
-    );
+    final c = compactar(texto);
 
+    const inicioAlvo = 'lancamentos:comprasesaques';
+
+    var inicio = c.indexOf(inicioAlvo);
+
+    // Alguns PDFs perdem os dois pontos.
     if (inicio < 0) {
-      return resultado;
+      inicio = c.indexOf('lancamentoscomprasesaques');
     }
 
-    var fim = localizarPrimeiroDe(
-      texto,
-      [
-        'Lançamentos: produtos e serviços',
-        'Lancamentos: produtos e servicos',
-        'Compras parceladas - próximas faturas',
-        'Compras parceladas proximas faturas',
-        'Total dos lançamentos atuais',
-        'Total dos lancamentos atuais',
-      ],
-      inicio: inicio + 10,
-    );
+    if (inicio < 0) return resultado;
 
-    if (fim < 0) {
-      fim = texto.length;
+    final possiveisFins = <int>[];
+
+    for (final alvo in [
+      'lancamentosnocartao',
+      'lancamentosinternacionais',
+      'lancamentos:produtoseservicos',
+      'comprasparceladas-proximasfaturas',
+      'comprasparceladasproximasfaturas',
+      'totaldoslancamentosatuais',
+    ]) {
+      final p = c.indexOf(alvo, inicio + 10);
+
+      if (p > inicio) possiveisFins.add(p);
     }
 
-    final secao =
-        texto.substring(inicio, fim);
+    if (possiveisFins.isEmpty) return resultado;
 
-    final totalInternacional =
-        primeiroValorDepois(
-      secao,
-      RegExp(
-        r'Total\s+transa[cç][oõ]es\s+inter',
-        caseSensitive: false,
-      ),
+    possiveisFins.sort();
+
+    final fim = possiveisFins.first;
+
+    var secao = c.substring(inicio, fim);
+
+    secao = secao
+        .replaceAll('lancamentos:comprasesaques', '')
+        .replaceAll('lancamentoscomprasesaques', '')
+        .replaceAll('dataestabelecimentovaloremr\$', '')
+        .replaceAll('continua...', '');
+
+    const categorias =
+        r'(restaurante|supermercado|vestuario|saude|'
+        r'servicos|outros|lazer|eletronicos|hotel|'
+        r'health|money|supermarket)';
+
+    final regex = RegExp(
+      r'(\d{2}/\d{2})'
+      r'(.+?)'
+      r'(?:(\d{2})/(\d{2}))?'
+      r'(-?[\d\.]+,\d{2})'
+      + categorias,
     );
 
-    final iof = primeiroValorDepois(
-      secao,
-      RegExp(
-        r'Repasse\s+de\s+IOF',
-        caseSensitive: false,
-      ),
-    );
+    for (final m in regex.allMatches(secao)) {
+      var descricao = m.group(2) ?? '';
 
-    if (totalInternacional != null) {
+      int? atual = int.tryParse(m.group(3) ?? '');
+      int? total = int.tryParse(m.group(4) ?? '');
+
+      // Segurança para parcela que tenha ficado
+      // grudada no final da descrição.
+      final parcelaNoFim = RegExp(
+        r'(\d{2})/(\d{2})$',
+      ).firstMatch(descricao);
+
+      if (parcelaNoFim != null) {
+        atual = int.tryParse(parcelaNoFim.group(1)!);
+        total = int.tryParse(parcelaNoFim.group(2)!);
+
+        descricao = descricao
+            .substring(0, parcelaNoFim.start);
+      }
+
+      final valor = m.group(5);
+      final categoria = m.group(6);
+
+      if (descricao.isEmpty ||
+          valor == null ||
+          categoria == null) {
+        continue;
+      }
+
       resultado.add(
         Lancamento(
-          data: '',
-          descricao:
-              'Transações internacionais',
-          categoria: 'internacional',
-          valor: totalInternacional,
-          tipo: 'Internacional',
+          data: m.group(1) ?? '',
+          descricao: descricao,
+          categoria: normalizarCategoria(categoria),
+          valor: moedaParaDouble(valor),
+          parcelaAtual: atual,
+          totalParcelas: total,
+          tipo: atual != null && total != null
+              ? 'Parcelada'
+              : 'À vista',
           observacoes:
-              'Subtotal internacional informado pelo Itaú',
+              'Descrição reconstruída de PDF fragmentado',
         ),
       );
     }
 
-    if (iof != null) {
+    return resultado;
+  }
+
+  // ==========================================================
+  // ESCOLHA DO MELHOR PARSER
+  // ==========================================================
+
+  static List<Lancamento> lerCompras(
+    String texto,
+    double? totalCartao,
+  ) {
+    final original = lerComprasOriginal(texto);
+
+    // Se o parser original já fecha o subtotal,
+    // não mexemos nele.
+    if (original.isNotEmpty && totalCartao != null) {
+      final soma =
+          original.fold<double>(0, (s, e) => s + e.valor);
+
+      if ((soma - totalCartao).abs() < 0.02) {
+        return original;
+      }
+    }
+
+    final fragmentado =
+        lerComprasFragmentadas(texto);
+
+    if (fragmentado.isEmpty) {
+      return original;
+    }
+
+    if (original.isEmpty) {
+      return fragmentado;
+    }
+
+    if (totalCartao != null) {
+      final somaOriginal =
+          original.fold<double>(0, (s, e) => s + e.valor);
+
+      final somaFragmentada =
+          fragmentado.fold<double>(0, (s, e) => s + e.valor);
+
+      final erroOriginal =
+          (totalCartao - somaOriginal).abs();
+
+      final erroFragmentado =
+          (totalCartao - somaFragmentada).abs();
+
+      return erroFragmentado < erroOriginal
+          ? fragmentado
+          : original;
+    }
+
+    return fragmentado.length > original.length
+        ? fragmentado
+        : original;
+  }
+
+  // ==========================================================
+  // INTERNACIONAL
+  //
+  // IMPORTANTE:
+  // totalInternacionalInformado é só conferência.
+  // O lançamento usa transação + IOF.
+  // ==========================================================
+
+  static List<Lancamento> lerInternacional(
+    String texto,
+  ) {
+    final resultado = <Lancamento>[];
+
+    final achatado =
+        texto.replaceAll('\r', '').replaceAll('\n', '');
+
+    final compra = procurarValor(
+      achatado,
+      RegExp(
+        r'Total transações inter\.\s*em R\$'
+        r'\s*([\d\.]+,\d{2})',
+        caseSensitive: false,
+      ),
+    );
+
+    final iof = procurarValor(
+      achatado,
+      RegExp(
+        r'Repasse de IOF\s*em R\$'
+        r'\s*([\d\.]+,\d{2})',
+        caseSensitive: false,
+      ),
+    );
+
+    final compraFallback = compra ??
+        procurarSubtotalCompactado(
+          texto,
+          'Total transações inter. em R\$',
+        );
+
+    final iofFallback = iof ??
+        procurarSubtotalCompactado(
+          texto,
+          'Repasse de IOF em R\$',
+        );
+
+    if (compraFallback != null &&
+        compraFallback.abs() > 0.001) {
+      resultado.add(
+        Lancamento(
+          data: '',
+          descricao: 'Compra internacional',
+          categoria: 'internacional',
+          valor: compraFallback,
+          tipo: 'Internacional',
+          observacoes:
+              'Transação internacional da fatura',
+        ),
+      );
+    }
+
+    if (iofFallback != null &&
+        iofFallback.abs() > 0.001) {
       resultado.add(
         Lancamento(
           data: '',
           descricao:
               'Repasse de IOF - transação internacional',
           categoria: 'encargos',
-          valor: iof,
+          valor: iofFallback,
           tipo: 'Encargo / IOF',
           observacoes:
-              'IOF de transação internacional',
+              'IOF da transação internacional',
         ),
       );
     }
@@ -758,103 +621,78 @@ class ParserItau {
     return resultado;
   }
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // PRODUTOS E SERVIÇOS
-  // ----------------------------------------------------------
+  // ==========================================================
 
-  static List<Lancamento>
-      lerProdutosServicos(
+  static List<Lancamento> lerProdutosServicos(
     String texto,
   ) {
-    final resultado =
-        <Lancamento>[];
+    final resultado = <Lancamento>[];
 
-    final inicio = localizarPrimeiroDe(
-      texto,
-      [
-        'Lançamentos: produtos e serviços',
-        'Lancamentos: produtos e servicos',
-      ],
+    final achatado =
+        texto.replaceAll('\r', '').replaceAll('\n', '');
+
+    int inicio = achatado.indexOf(
+      'Lançamentos: produtos e serviços',
     );
 
-    if (inicio < 0) {
+    int fim =
+        achatado.indexOf('Total dos lançamentos atuais');
+
+    if (inicio < 0 || fim <= inicio) {
       return resultado;
     }
 
-    var fim = localizarPrimeiroDe(
-      texto,
-      [
-        'Total dos lançamentos atuais',
-        'Total dos lancamentos atuais',
-        'Compras parceladas - próximas faturas',
-        'Compras parceladas proximas faturas',
-      ],
-      inicio: inicio + 10,
+    var secao = achatado.substring(inicio, fim);
+
+    secao = secao.replaceAll(
+      RegExp(
+        r'Lançamentos:\s*produtos\s*e\s*serviços',
+        caseSensitive: false,
+      ),
+      '',
     );
 
-    if (fim < 0) {
-      fim = texto.length;
-    }
+    final datas =
+        RegExp(r'\d{2}/\d{2}').allMatches(secao).toList();
 
-    final secao =
-        texto.substring(inicio, fim);
+    for (int i = 0; i < datas.length; i++) {
+      final atual = datas[i];
 
-    final linhas =
-        prepararLinhas(secao);
+      final fimBloco = i + 1 < datas.length
+          ? datas[i + 1].start
+          : secao.length;
 
-    for (final linha in linhas) {
-      var l = linha;
-
-      l = l.replaceAllMapped(
-        RegExp(
-          r'(\d{1,2})\s*/\s*(\d)\s+(\d)',
-        ),
-        (m) =>
-            '${m.group(1)}/${m.group(2)}${m.group(3)}',
+      var bloco = secao.substring(
+        atual.start,
+        fimBloco,
       );
 
-      l = l.replaceAllMapped(
-        RegExp(
-          r'(\d)\s+,\s*(\d{2})',
-        ),
-        (m) =>
-            '${m.group(1)},${m.group(2)}',
-      );
+      final data = bloco.substring(0, 5);
 
-      final dataMatch = RegExp(
-        r'^(\d{1,2}/\d{1,2})\s+',
-      ).firstMatch(l);
-
-      if (dataMatch == null) continue;
-
-      final data =
-          normalizarData(dataMatch.group(1)!);
-
-      final resto =
-          l.substring(dataMatch.end);
+      bloco = bloco.substring(5);
 
       final valorMatch = RegExp(
-        r'(-?\d[\d\.]*,\d{2})',
-      ).firstMatch(resto);
+        r'(-?[\d\.]+,\d{2})',
+      ).firstMatch(bloco);
 
       if (valorMatch == null) continue;
 
-      var descricao = resto
-          .substring(0, valorMatch.start)
-          .trim();
+      var descricao =
+          bloco.substring(0, valorMatch.start);
+
+      descricao = limparEspacos(descricao);
 
       if (descricao.isEmpty) {
-        descricao =
-            'Produto/serviço Itaú';
+        descricao = 'Produto/serviço Itaú';
       }
 
       resultado.add(
         Lancamento(
           data: data,
-          descricao:
-              limparEspacos(descricao),
-          categoria:
-              'produtos e serviços',
+          descricao: descricao,
+          categoria: 'produtos e serviços',
           valor: moedaParaDouble(
             valorMatch.group(1)!,
           ),
@@ -866,409 +704,199 @@ class ParserItau {
     return resultado;
   }
 
-  // ----------------------------------------------------------
-  // ENCARGOS FINANCEIROS / MORATÓRIOS
-  // ----------------------------------------------------------
+  // ==========================================================
+  // ENCARGOS
+  //
+  // Só adiciona a diferença se houver evidência textual
+  // de encargos cobrados e a diferença for positiva.
+  // ==========================================================
 
-  static List<Lancamento>
-      lerEncargosFinanceiros(
+  static Lancamento? procurarEncargos(
     String texto,
-    double? totalEncargos,
+    double diferenca,
   ) {
-    final resultado =
-        <Lancamento>[];
+    if (diferenca <= 0.009) return null;
 
-    if (totalEncargos == null ||
-        totalEncargos.abs() < 0.01) {
-      return resultado;
-    }
+    final c = compactar(texto);
 
-    // Não usamos aqui os encargos da simulação
-    // de pagamento mínimo da primeira página.
-    // O valor só entra se o resumo da fatura
-    // informar encargos efetivamente cobrados.
+    final temEncargo =
+        c.contains('encargosdefinanciamento') ||
+            c.contains('encargosmoratorios') ||
+            c.contains('jurosrotativo') ||
+            c.contains('jurosdemora') ||
+            c.contains('multaporatraso');
 
-    resultado.add(
-      Lancamento(
-        data: '',
-        descricao:
-            'Encargos de financiamento / moratórios',
-        categoria: 'encargos',
-        valor: totalEncargos,
-        tipo: 'Encargo',
-        observacoes:
-            'Encargos efetivamente cobrados nesta fatura',
-      ),
+    if (!temEncargo) return null;
+
+    return Lancamento(
+      data: '',
+      descricao:
+          'Encargos de financiamento / moratórios',
+      categoria: 'encargos',
+      valor: diferenca,
+      tipo: 'Encargo',
+      observacoes:
+          'Encargos cobrados identificados na fatura',
     );
-
-    return resultado;
   }
 
-  // ----------------------------------------------------------
-  // TOTAIS
-  // ----------------------------------------------------------
+  // ==========================================================
+  // VENCIMENTO
+  // ==========================================================
 
-  static double? procurarTotalFatura(
-    String texto,
-  ) {
-    final padroes = [
-      RegExp(
-        r'Total\s+desta\s+fatura\s*'
-        r'(-?\s*\d[\d\.\s]*,\s*\d{2})',
-        caseSensitive: false,
-      ),
-      RegExp(
-        r'O\s+total\s+da\s+sua\s+fatura\s+[eé]\s*:?\s*'
-        r'R?\$?\s*(-?\s*\d[\d\.\s]*,\s*\d{2})',
-        caseSensitive: false,
-      ),
-    ];
+  static String procurarVencimento(String texto) {
+    final m = RegExp(
+      r'Vencimento\s*:?\s*(\d{2}/\d{2}/\d{4})',
+      caseSensitive: false,
+    ).firstMatch(texto);
 
-    for (final regex in padroes) {
-      final m = regex.firstMatch(texto);
-
-      if (m != null &&
-          m.group(1) != null) {
-        return moedaParaDouble(
-          normalizarValor(
-            m.group(1)!,
-          ),
-        );
-      }
-    }
-
-    // Busca tolerante a fragmentação.
-    final linhas =
-        prepararLinhas(texto);
-
-    for (int i = 0;
-        i < linhas.length;
-        i++) {
-      final c =
-          compactar(linhas[i]);
-
-      if (c.contains(
-        'totaldestafatura',
-      )) {
-        final valor = RegExp(
-          r'-?\s*\d[\d\.\s]*,\s*\d{2}',
-        ).allMatches(linhas[i]).toList();
-
-        if (valor.isNotEmpty) {
-          return moedaParaDouble(
-            normalizarValor(
-              valor.last.group(0)!,
-            ),
-          );
-        }
-
-        if (i + 1 < linhas.length) {
-          final proximo = RegExp(
-            r'-?\s*\d[\d\.\s]*,\s*\d{2}',
-          ).firstMatch(linhas[i + 1]);
-
-          if (proximo != null) {
-            return moedaParaDouble(
-              normalizarValor(
-                proximo.group(0)!,
-              ),
-            );
-          }
-        }
-      }
-    }
-
-    return null;
+    return m?.group(1) ?? '';
   }
 
-  static double? procurarSubtotal(
-    String texto,
-    List<String> nomes,
-  ) {
-    final linhas =
-        prepararLinhas(texto);
+  // ==========================================================
+  // CARTÃO
+  // ==========================================================
 
-    for (final linha in linhas) {
-      final c =
-          compactar(linha);
+  static String procurarCartao(String texto) {
+    final m = RegExp(
+      r'Cart[aã]o\s+([Xx\d\.\s]{4,})',
+      caseSensitive: false,
+    ).firstMatch(texto);
 
-      for (final nome in nomes) {
-        if (c.contains(
-          compactar(nome),
-        )) {
-          final valores = RegExp(
-            r'-?\s*\d[\d\.\s]*,\s*\d{2}',
-          ).allMatches(linha).toList();
-
-          if (valores.isNotEmpty) {
-            return moedaParaDouble(
-              normalizarValor(
-                valores.last.group(0)!,
-              ),
-            );
-          }
-        }
-      }
-    }
-
-    return null;
+    return limparEspacos(m?.group(1) ?? '');
   }
 
-  // ----------------------------------------------------------
-  // REMOÇÃO DE DUPLICIDADES
-  // ----------------------------------------------------------
-
-  static List<Lancamento>
-      removerDuplicados(
-    List<Lancamento> itens,
-  ) {
-    final resultado =
-        <Lancamento>[];
-
-    final vistos = <String>{};
-
-    for (final item in itens) {
-      final chave =
-          '${item.data}|'
-          '${compactar(item.descricao)}|'
-          '${item.valor.toStringAsFixed(2)}|'
-          '${item.parcelaAtual}|'
-          '${item.totalParcelas}|'
-          '${item.tipo}';
-
-      if (!vistos.contains(chave)) {
-        vistos.add(chave);
-        resultado.add(item);
-      }
-    }
-
-    return resultado;
-  }
-
-  // ----------------------------------------------------------
-  // PROCESSAMENTO PRINCIPAL
-  // ----------------------------------------------------------
+  // ==========================================================
+  // PROCESSAMENTO
+  // ==========================================================
 
   static ResultadoFatura processar(
-    String textoOriginal,
+    String texto,
   ) {
-    final alertas =
-        <String>[];
+    final alertas = <String>[];
 
     final totalFatura =
-        procurarTotalFatura(
-      textoOriginal,
-    );
+        procurarTotalFatura(texto);
 
     final totalCartao =
-        procurarSubtotal(
-      textoOriginal,
-      [
-        'Lançamentos no cartão',
-        'Lancamentos no cartao',
-      ],
+        procurarSubtotalCompactado(
+      texto,
+      'Lançamentos no cartão',
     );
 
     final totalInternacional =
-        procurarSubtotal(
-      textoOriginal,
-      [
-        'Total lançamentos inter. em R\$',
-        'Total lancamentos inter. em R\$',
-      ],
+        procurarSubtotalCompactado(
+      texto,
+      'Total lançamentos inter. em R\$',
     );
 
     final totalServicos =
-        procurarSubtotal(
-      textoOriginal,
-      [
-        'Lançamentos produtos e serviços',
-        'Lancamentos produtos e servicos',
-      ],
-    );
-
-    // Alguns layouts têm encargos efetivamente
-    // cobrados fora dos lançamentos do cartão.
-    //
-    // Primeiro tentamos identificar um subtotal
-    // explícito de encargos da fatura.
-    double? totalEncargos =
-        procurarSubtotal(
-      textoOriginal,
-      [
-        'Encargos de financiamento',
-        'Encargos financiamento',
-        'Encargos moratórios',
-        'Encargos moratorios',
-        'Total encargos',
-      ],
+        procurarSubtotalCompactado(
+      texto,
+      'Lançamentos produtos e serviços',
     );
 
     final compras =
-        lerCompras(textoOriginal);
-
-    final produtos =
-        lerProdutosServicos(
-      textoOriginal,
-    );
+        lerCompras(texto, totalCartao);
 
     final internacional =
-        lerInternacional(
-      textoOriginal,
-    );
+        lerInternacional(texto);
 
-    // --------------------------------------------------------
-    // CONSTRUÇÃO INICIAL
-    // --------------------------------------------------------
+    final produtos =
+        lerProdutosServicos(texto);
 
-    var lancamentos =
-        <Lancamento>[];
+    final lancamentos = <Lancamento>[
+      ...compras,
+      ...internacional,
+      ...produtos,
+    ];
 
-    lancamentos.addAll(compras);
-    lancamentos.addAll(produtos);
-
-    // Se há subtotal internacional, precisamos evitar
-    // dupla contagem.
-    //
-    // O parser internacional adiciona o subtotal das
-    // transações + IOF separadamente.
-    lancamentos.addAll(internacional);
-
-    lancamentos =
-        removerDuplicados(lancamentos);
-
-    // --------------------------------------------------------
-    // RECONCILIAÇÃO POR SUBTOTAIS
-    // --------------------------------------------------------
-
-    double somaSemEncargos =
-        lancamentos.fold(
-      0.0,
-      (s, e) => s + e.valor,
-    );
+    // ========================================================
+    // ENCARGOS REAIS
+    // ========================================================
 
     if (totalFatura != null) {
-      final falta =
-          totalFatura - somaSemEncargos;
+      final somaAtual = lancamentos.fold<double>(
+        0,
+        (s, e) => s + e.valor,
+      );
 
-      // Se existe um subtotal explícito de encargos,
-      // ele deve explicar a diferença.
-      if (totalEncargos != null &&
-          (falta - totalEncargos).abs() <
-              0.02) {
-        lancamentos.addAll(
-          lerEncargosFinanceiros(
-            textoOriginal,
-            totalEncargos,
-          ),
-        );
-      } else if (falta.abs() >= 0.01) {
-        // Caso especial observado nas faturas:
-        // quando cartão + produtos + internacional
-        // não chegam ao total, verificamos se a
-        // diferença corresponde a encargos cobrados.
-        //
-        // Não aceitamos qualquer diferença como
-        // encargo automaticamente. Ela precisa ter
-        // evidência textual no documento.
+      final falta = totalFatura - somaAtual;
 
-        final compacto =
-            compactar(textoOriginal);
+      final encargo =
+          procurarEncargos(texto, falta);
 
-        final temIndicacaoEncargos =
-            compacto.contains(
-                  'encargosdefinanciamento',
-                ) ||
-                compacto.contains(
-                  'encargosmoratorios',
-                ) ||
-                compacto.contains(
-                  'jurosrotativo',
-                ) ||
-                compacto.contains(
-                  'jurosdemora',
-                ) ||
-                compacto.contains(
-                  'multaporatraso',
-                );
-
-        if (temIndicacaoEncargos &&
-            falta > 0) {
-          totalEncargos = falta;
-
-          lancamentos.add(
-            Lancamento(
-              data: '',
-              descricao:
-                  'Encargos de financiamento / moratórios',
-              categoria: 'encargos',
-              valor: falta,
-              tipo: 'Encargo',
-              observacoes:
-                  'Valor conciliado com encargos '
-                  'identificados no PDF',
-            ),
-          );
-        }
+      if (encargo != null) {
+        lancamentos.add(encargo);
       }
     }
 
-    lancamentos =
-        removerDuplicados(lancamentos);
+    // ========================================================
+    // VALIDAÇÃO DAS COMPRAS
+    // ========================================================
 
-    // --------------------------------------------------------
-    // ALERTAS
-    // --------------------------------------------------------
+    final somaCompras = compras.fold<double>(
+      0,
+      (s, e) => s + e.valor,
+    );
+
+    if (compras.isEmpty) {
+      alertas.add(
+        'Nenhuma compra individual foi reconstruída.',
+      );
+    }
+
+    if (totalCartao != null) {
+      final diferencaCartao =
+          totalCartao - somaCompras;
+
+      if (diferencaCartao.abs() >= 0.02) {
+        alertas.add(
+          'Compras individuais não fecham o subtotal '
+          '"Lançamentos no cartão". '
+          'Diferença: R\$ '
+          '${diferencaCartao.toStringAsFixed(2)}',
+        );
+      }
+    }
+
+    // ========================================================
+    // VALIDAÇÃO FINAL
+    // ========================================================
+
+    final somaFinal = lancamentos.fold<double>(
+      0,
+      (s, e) => s + e.valor,
+    );
 
     if (totalFatura == null) {
       alertas.add(
         'Total da fatura não identificado.',
       );
-    }
-
-    if (compras.isEmpty) {
-      alertas.add(
-        'Nenhuma compra foi identificada.',
-      );
-    }
-
-    final somaFinal =
-        lancamentos.fold<double>(
-      0.0,
-      (s, e) => s + e.valor,
-    );
-
-    if (totalFatura != null) {
-      final diff =
+    } else {
+      final diferenca =
           totalFatura - somaFinal;
 
-      if (diff.abs() >= 0.01) {
+      if (diferenca.abs() >= 0.02) {
         alertas.add(
-          'Diferença de conciliação: '
-          'R\$ ${diff.toStringAsFixed(2)}',
+          'Total ainda não conciliado. '
+          'Diferença: R\$ '
+          '${diferenca.toStringAsFixed(2)}',
         );
       }
     }
 
     return ResultadoFatura(
       totalFatura: totalFatura,
-      totalCartaoInformado:
-          totalCartao,
+      totalCartaoInformado: totalCartao,
       totalInternacionalInformado:
           totalInternacional,
       totalServicosInformado:
           totalServicos,
-      totalEncargosInformado:
-          totalEncargos,
-      vencimento:
-          procurarVencimento(
-        textoOriginal,
-      ),
-      cartao:
-          procurarCartao(
-        textoOriginal,
-      ),
+      vencimento: procurarVencimento(texto),
+      cartao: procurarCartao(texto),
       lancamentos: lancamentos,
+      compras: compras,
       alertas: alertas,
     );
   }
@@ -1307,330 +935,181 @@ class HomePage extends StatefulWidget {
       _HomePageState();
 }
 
-class _HomePageState
-    extends State<HomePage> {
+class _HomePageState extends State<HomePage> {
   bool processando = false;
   bool gerandoExcel = false;
 
   String status =
       'Selecione uma ou mais faturas Itaú em PDF.';
 
-  final List<FaturaProcessada>
-      faturas = [];
+  final List<FaturaProcessada> faturas = [];
 
-  // ----------------------------------------------------------
-  // RESUMO
-  // ----------------------------------------------------------
+  int get quantidadeConciliadas => faturas
+      .where((f) => f.resultado.conciliada)
+      .length;
 
-  int get quantidadeConciliadas =>
-      faturas
-          .where(
-            (f) =>
-                f.resultado.conciliada,
-          )
-          .length;
+  int get quantidadeIncompletas => faturas
+      .where((f) => f.resultado.status == 'INCOMPLETA')
+      .length;
 
-  int get quantidadeFalhas =>
-      faturas
-          .where(
-            (f) =>
-                f.resultado.falhaLeitura,
-          )
-          .length;
+  int get quantidadeFalhas => faturas
+      .where((f) => f.resultado.falhaLeitura)
+      .length;
 
-  int get quantidadeDivergentes =>
-      faturas
-          .where(
-            (f) =>
-                !f.resultado.conciliada &&
-                !f.resultado.falhaLeitura,
-          )
-          .length;
+  int get quantidadeDivergentes => faturas
+      .where((f) => f.resultado.status == 'DIVERGENTE')
+      .length;
 
-  int get totalLancamentos =>
-      faturas.fold(
+  int get totalLancamentos => faturas.fold(
         0,
-        (total, f) =>
-            total +
-            f.resultado.lancamentos.length,
+        (s, f) => s + f.resultado.lancamentos.length,
       );
 
-  int get totalParceladas =>
-      faturas.fold(
+  int get totalParceladas => faturas.fold(
         0,
-        (total, f) =>
-            total +
-            f.resultado
-                .quantidadeParceladas,
+        (s, f) => s + f.resultado.quantidadeParceladas,
       );
 
-  double get valorTotalFaturas =>
-      faturas.fold(
+  double get valorTotalFaturas => faturas.fold(
         0.0,
-        (total, f) =>
-            total +
-            (f.resultado.totalFatura ??
-                0),
+        (s, f) => s + (f.resultado.totalFatura ?? 0),
       );
 
-  double get somaTotalLancamentos =>
-      faturas.fold(
+  double get somaTotalLancamentos => faturas.fold(
         0.0,
-        (total, f) =>
-            total +
-            f.resultado.soma,
+        (s, f) => s + f.resultado.soma,
       );
-
-  double get diferencaTotal =>
-      valorTotalFaturas -
-      somaTotalLancamentos;
 
   bool get todasConciliadas =>
       faturas.isNotEmpty &&
-      faturas.every(
-        (f) => f.resultado.conciliada,
-      );
+      faturas.every((f) => f.resultado.conciliada);
 
-  // ----------------------------------------------------------
-  // SELEÇÃO
-  // ----------------------------------------------------------
+  Future<void> selecionarFaturas() async {
+    final escolha =
+        await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['pdf'],
+      allowMultiple: true,
+    );
 
-  Future<void>
-      selecionarFaturas() async {
-    try {
-      final escolha =
-          await FilePicker.platform
-              .pickFiles(
-        type: FileType.custom,
-        allowedExtensions: ['pdf'],
-        allowMultiple: true,
-      );
-
-      if (escolha == null ||
-          escolha.files.isEmpty) {
-        return;
-      }
-
-      setState(() {
-        processando = true;
-        faturas.clear();
-
-        status =
-            'Preparando ${escolha.files.length} '
-            'fatura(s)...';
-      });
-
-      for (int i = 0;
-          i < escolha.files.length;
-          i++) {
-        final arquivo =
-            escolha.files[i];
-
-        setState(() {
-          status =
-              'Analisando ${i + 1} de '
-              '${escolha.files.length}\n'
-              '${arquivo.name}';
-        });
-
-        try {
-          if (arquivo.path == null) {
-            throw Exception(
-              'Arquivo sem caminho acessível.',
-            );
-          }
-
-          final bytes =
-              await File(
-            arquivo.path!,
-          ).readAsBytes();
-
-          final documento =
-              PdfDocument(
-            inputBytes: bytes,
-          );
-
-          final texto =
-              PdfTextExtractor(
-            documento,
-          ).extractText();
-
-          documento.dispose();
-
-          if (texto.trim().isEmpty) {
-            faturas.add(
-              FaturaProcessada(
-                arquivo: arquivo.name,
-                resultado:
-                    ResultadoFatura(
-                  totalFatura: null,
-                  lancamentos: const [],
-                  alertas: const [
-                    'O PDF não forneceu texto para leitura.',
-                  ],
-                ),
-              ),
-            );
-
-            continue;
-          }
-
-          final resultado =
-              ParserItau.processar(
-            texto,
-          );
-
-          faturas.add(
-            FaturaProcessada(
-              arquivo: arquivo.name,
-              resultado: resultado,
-            ),
-          );
-        } catch (e) {
-          // A fatura permanece na lista.
-          // Nunca desaparece silenciosamente.
-          faturas.add(
-            FaturaProcessada(
-              arquivo: arquivo.name,
-              resultado:
-                  ResultadoFatura(
-                totalFatura: null,
-                lancamentos: const [],
-                alertas: [
-                  'Falha ao processar: $e',
-                ],
-              ),
-            ),
-          );
-        }
-      }
-
-      if (!mounted) return;
-
-      setState(() {
-        processando = false;
-
-        if (todasConciliadas) {
-          status =
-              '${faturas.length} fatura(s) '
-              'processada(s) e conferida(s).';
-        } else {
-          status =
-              '${faturas.length} fatura(s) processada(s).\n'
-              '$quantidadeConciliadas conciliada(s), '
-              '$quantidadeDivergentes divergente(s), '
-              '$quantidadeFalhas com falha de leitura.';
-        }
-      });
-    } catch (e) {
-      if (!mounted) return;
-
-      setState(() {
-        processando = false;
-        status =
-            'Erro ao selecionar arquivos:\n$e';
-      });
-    }
-  }
-
-  // ----------------------------------------------------------
-  // EXCEL
-  // ----------------------------------------------------------
-
-  Future<void>
-      gerarExcelConsolidado() async {
-    if (!todasConciliadas) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(
-        const SnackBar(
-          content: Text(
-            'O Excel só será liberado '
-            'quando todas as faturas '
-            'estiverem conciliadas.',
-          ),
-        ),
-      );
-
+    if (escolha == null || escolha.files.isEmpty) {
       return;
     }
 
-    try {
+    setState(() {
+      processando = true;
+      faturas.clear();
+    });
+
+    for (int i = 0; i < escolha.files.length; i++) {
+      final arquivo = escolha.files[i];
+
       setState(() {
-        gerandoExcel = true;
+        status =
+            'Analisando ${i + 1} de '
+            '${escolha.files.length}\n'
+            '${arquivo.name}';
       });
 
-      final excel =
-          Excel.createExcel();
+      try {
+        if (arquivo.path == null) {
+          throw Exception('Arquivo inacessível');
+        }
 
-      // ======================================================
-      // LANÇAMENTOS
-      // ======================================================
+        final bytes =
+            await File(arquivo.path!).readAsBytes();
 
-      final sheet =
-          excel['Lançamentos'];
+        final documento =
+            PdfDocument(inputBytes: bytes);
+
+        final texto =
+            PdfTextExtractor(documento).extractText();
+
+        documento.dispose();
+
+        final resultado =
+            ParserItau.processar(texto);
+
+        faturas.add(
+          FaturaProcessada(
+            arquivo: arquivo.name,
+            resultado: resultado,
+          ),
+        );
+      } catch (e) {
+        faturas.add(
+          FaturaProcessada(
+            arquivo: arquivo.name,
+            resultado: ResultadoFatura(
+              totalFatura: null,
+              lancamentos: const [],
+              compras: const [],
+              alertas: [
+                'Falha ao processar: $e',
+              ],
+            ),
+          ),
+        );
+      }
+    }
+
+    if (!mounted) return;
+
+    setState(() {
+      processando = false;
+
+      status =
+          '${faturas.length} fatura(s) processada(s).\n'
+          '$quantidadeConciliadas conciliada(s), '
+          '$quantidadeIncompletas incompleta(s), '
+          '$quantidadeDivergentes divergente(s), '
+          '$quantidadeFalhas falha(s).';
+    });
+  }
+
+  Future<void> gerarExcel() async {
+    if (!todasConciliadas) return;
+
+    setState(() {
+      gerandoExcel = true;
+    });
+
+    try {
+      final excel = Excel.createExcel();
+
+      final sheet = excel['Lançamentos'];
 
       sheet.appendRow([
         TextCellValue('Fatura / Arquivo'),
         TextCellValue('Vencimento'),
-        TextCellValue('Cartão'),
         TextCellValue('Data da compra'),
-        TextCellValue(
-          'Descrição da compra',
-        ),
+        TextCellValue('Descrição da compra'),
         TextCellValue('Categoria'),
         TextCellValue('Valor'),
         TextCellValue('Parcela atual'),
-        TextCellValue(
-          'Quantidade total de parcelas',
-        ),
+        TextCellValue('Total de parcelas'),
         TextCellValue('Tipo'),
         TextCellValue('Observações'),
       ]);
 
       for (final fatura in faturas) {
-        final r =
-            fatura.resultado;
-
         for (final item
-            in r.lancamentos) {
+            in fatura.resultado.lancamentos) {
           sheet.appendRow([
-            TextCellValue(
-              fatura.arquivo,
-            ),
-            TextCellValue(
-              r.vencimento,
-            ),
-            TextCellValue(
-              r.cartao,
-            ),
-            TextCellValue(
-              item.data,
-            ),
-            TextCellValue(
-              item.descricao,
-            ),
-            TextCellValue(
-              item.categoria,
-            ),
-            DoubleCellValue(
-              item.valor,
-            ),
+            TextCellValue(fatura.arquivo),
+            TextCellValue(fatura.resultado.vencimento),
+            TextCellValue(item.data),
+            TextCellValue(item.descricao),
+            TextCellValue(item.categoria),
+            DoubleCellValue(item.valor),
             item.parcelaAtual == null
                 ? TextCellValue('')
-                : IntCellValue(
-                    item.parcelaAtual!,
-                  ),
+                : IntCellValue(item.parcelaAtual!),
             item.totalParcelas == null
                 ? TextCellValue('')
-                : IntCellValue(
-                    item.totalParcelas!,
-                  ),
-            TextCellValue(
-              item.tipo,
-            ),
-            TextCellValue(
-              item.observacoes,
-            ),
+                : IntCellValue(item.totalParcelas!),
+            TextCellValue(item.tipo),
+            TextCellValue(item.observacoes),
           ]);
         }
       }
@@ -1639,258 +1118,64 @@ class _HomePageState
         TextCellValue(''),
         TextCellValue(''),
         TextCellValue(''),
+        TextCellValue('TOTAL'),
         TextCellValue(''),
-        TextCellValue(
-          'TOTAL CONSOLIDADO',
-        ),
-        TextCellValue(''),
-        DoubleCellValue(
-          somaTotalLancamentos,
-        ),
+        DoubleCellValue(somaTotalLancamentos),
         TextCellValue(''),
         TextCellValue(''),
         TextCellValue(''),
         TextCellValue(''),
       ]);
 
-      sheet.setColumnWidth(0, 35);
-      sheet.setColumnWidth(1, 16);
-      sheet.setColumnWidth(2, 25);
-      sheet.setColumnWidth(3, 15);
-      sheet.setColumnWidth(4, 42);
-      sheet.setColumnWidth(5, 22);
-      sheet.setColumnWidth(6, 16);
-      sheet.setColumnWidth(7, 15);
-      sheet.setColumnWidth(8, 26);
-      sheet.setColumnWidth(9, 22);
-      sheet.setColumnWidth(10, 40);
-
-      // ======================================================
-      // CONFERÊNCIA
-      // ======================================================
-
-      final conferencia =
-          excel['Conferência'];
+      final conferencia = excel['Conferência'];
 
       conferencia.appendRow([
         TextCellValue('Arquivo'),
-        TextCellValue('Vencimento'),
-        TextCellValue('Cartão'),
-        TextCellValue(
-          'Valor total da fatura',
-        ),
-        TextCellValue(
-          'Soma dos lançamentos',
-        ),
-        TextCellValue('Diferença'),
+        TextCellValue('Total da fatura'),
+        TextCellValue('Subtotal cartão'),
+        TextCellValue('Soma compras individuais'),
+        TextCellValue('Diferença cartão'),
+        TextCellValue('Soma geral'),
+        TextCellValue('Diferença geral'),
         TextCellValue('Lançamentos'),
         TextCellValue('Parceladas'),
-        TextCellValue('Cartão Itaú'),
-        TextCellValue('Internacional'),
-        TextCellValue(
-          'Produtos/serviços',
-        ),
-        TextCellValue('Encargos'),
         TextCellValue('Status'),
       ]);
 
       for (final fatura in faturas) {
-        final r =
-            fatura.resultado;
+        final r = fatura.resultado;
 
         conferencia.appendRow([
-          TextCellValue(
-            fatura.arquivo,
-          ),
-          TextCellValue(
-            r.vencimento,
-          ),
-          TextCellValue(
-            r.cartao,
-          ),
-          DoubleCellValue(
-            r.totalFatura ?? 0,
-          ),
-          DoubleCellValue(
-            r.soma,
-          ),
-          DoubleCellValue(
-            r.diferenca ?? 0,
-          ),
-          IntCellValue(
-            r.lancamentos.length,
-          ),
-          IntCellValue(
-            r.quantidadeParceladas,
-          ),
-          DoubleCellValue(
-            r.totalCartaoInformado ?? 0,
-          ),
-          DoubleCellValue(
-            r.totalInternacionalInformado ??
-                0,
-          ),
-          DoubleCellValue(
-            r.totalServicosInformado ?? 0,
-          ),
-          DoubleCellValue(
-            r.totalEncargosInformado ?? 0,
-          ),
-          TextCellValue(
-            r.status,
-          ),
+          TextCellValue(fatura.arquivo),
+          DoubleCellValue(r.totalFatura ?? 0),
+          DoubleCellValue(r.totalCartaoInformado ?? 0),
+          DoubleCellValue(r.somaCompras),
+          DoubleCellValue(r.diferencaCartao ?? 0),
+          DoubleCellValue(r.soma),
+          DoubleCellValue(r.diferenca ?? 0),
+          IntCellValue(r.lancamentos.length),
+          IntCellValue(r.quantidadeParceladas),
+          TextCellValue(r.status),
         ]);
       }
 
-      conferencia.appendRow([
-        TextCellValue(
-          'TOTAL CONSOLIDADO',
-        ),
-        TextCellValue(''),
-        TextCellValue(''),
-        DoubleCellValue(
-          valorTotalFaturas,
-        ),
-        DoubleCellValue(
-          somaTotalLancamentos,
-        ),
-        DoubleCellValue(
-          diferencaTotal,
-        ),
-        IntCellValue(
-          totalLancamentos,
-        ),
-        IntCellValue(
-          totalParceladas,
-        ),
-        TextCellValue(''),
-        TextCellValue(''),
-        TextCellValue(''),
-        TextCellValue(''),
-        TextCellValue(
-          todasConciliadas
-              ? 'CONCILIADO'
-              : 'DIVERGENTE',
-        ),
-      ]);
-
-      for (int i = 0;
-          i <= 12;
-          i++) {
-        conferencia.setColumnWidth(
-          i,
-          i == 0 ? 35 : 20,
-        );
-      }
-
-      // ======================================================
-      // DIVERGÊNCIAS
-      // ======================================================
-
-      if (!todasConciliadas) {
-        final divergencias =
-            excel['Divergências'];
-
-        divergencias.appendRow([
-          TextCellValue('Arquivo'),
-          TextCellValue('Status'),
-          TextCellValue(
-            'Total da fatura',
-          ),
-          TextCellValue(
-            'Soma dos lançamentos',
-          ),
-          TextCellValue('Diferença'),
-          TextCellValue(
-            'Observações',
-          ),
-        ]);
-
-        for (final fatura
-            in faturas) {
-          final r =
-              fatura.resultado;
-
-          if (!r.conciliada) {
-            divergencias.appendRow([
-              TextCellValue(
-                fatura.arquivo,
-              ),
-              TextCellValue(
-                r.status,
-              ),
-              DoubleCellValue(
-                r.totalFatura ?? 0,
-              ),
-              DoubleCellValue(
-                r.soma,
-              ),
-              DoubleCellValue(
-                r.diferenca ?? 0,
-              ),
-              TextCellValue(
-                r.alertas.join(' | '),
-              ),
-            ]);
-          }
-        }
-
-        divergencias
-            .setColumnWidth(0, 35);
-        divergencias
-            .setColumnWidth(1, 22);
-        divergencias
-            .setColumnWidth(2, 20);
-        divergencias
-            .setColumnWidth(3, 22);
-        divergencias
-            .setColumnWidth(4, 20);
-        divergencias
-            .setColumnWidth(5, 60);
-      }
-
-      if (excel.tables
-          .containsKey('Sheet1')) {
+      if (excel.tables.containsKey('Sheet1')) {
         excel.delete('Sheet1');
       }
 
-      final bytes =
-          excel.encode();
+      final bytes = excel.encode();
 
       if (bytes == null) {
-        throw Exception(
-          'Não foi possível gerar o Excel.',
-        );
+        throw Exception('Falha ao criar Excel');
       }
 
-      final pasta =
-          await getTemporaryDirectory();
+      final pasta = await getTemporaryDirectory();
 
-      final agora =
-          DateTime.now();
-
-      final nome =
-          'Faturas_Itau_'
-          '${agora.year}'
-          '${agora.month.toString().padLeft(2, '0')}'
-          '${agora.day.toString().padLeft(2, '0')}'
-          '_consolidado.xlsx';
-
-      final arquivo =
-          File(
-        '${pasta.path}/$nome',
+      final arquivo = File(
+        '${pasta.path}/Faturas_Itau_conferidas.xlsx',
       );
 
-      await arquivo.writeAsBytes(
-        bytes,
-        flush: true,
-      );
-
-      if (!mounted) return;
-
-      setState(() {
-        gerandoExcel = false;
-      });
+      await arquivo.writeAsBytes(bytes);
 
       await Share.shareXFiles(
         [
@@ -1900,97 +1185,50 @@ class _HomePageState
                 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
           ),
         ],
-        subject:
-            'Faturas Itaú conferidas',
-        text:
-            '${faturas.length} fatura(s) '
-            'processada(s) e conciliada(s).',
       );
-    } catch (e) {
-      if (!mounted) return;
-
-      setState(() {
-        gerandoExcel = false;
-      });
-
-      ScaffoldMessenger.of(context)
-          .showSnackBar(
-        SnackBar(
-          content: Text(
-            'Erro ao gerar Excel: $e',
-          ),
-        ),
-      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          gerandoExcel = false;
+        });
+      }
     }
   }
 
-  // ----------------------------------------------------------
-  // FORMATAÇÃO
-  // ----------------------------------------------------------
+  String dinheiro(double valor) {
+    final negativo = valor < 0;
 
-  String dinheiro(
-    double valor,
-  ) {
-    final sinal =
-        valor < 0 ? '-' : '';
+    final partes =
+        valor.abs().toStringAsFixed(2).split('.');
 
-    final partes = valor
-        .abs()
-        .toStringAsFixed(2)
-        .split('.');
+    var inteiro = partes[0];
 
-    final inteiro =
-        partes[0];
+    final buffer = StringBuffer();
 
-    final buffer =
-        StringBuffer();
+    for (int i = 0; i < inteiro.length; i++) {
+      final restante = inteiro.length - i;
 
-    for (int i = 0;
-        i < inteiro.length;
-        i++) {
-      final restante =
-          inteiro.length - i;
+      buffer.write(inteiro[i]);
 
-      buffer.write(
-        inteiro[i],
-      );
-
-      if (restante > 1 &&
-          restante % 3 == 1) {
+      if (restante > 1 && restante % 3 == 1) {
         buffer.write('.');
       }
     }
 
-    return '${sinal}R\$ '
-        '${buffer.toString()},'
-        '${partes[1]}';
+    return '${negativo ? '-' : ''}R\$ '
+        '${buffer.toString()},${partes[1]}';
   }
 
-  Widget linhaResumo(
-    String titulo,
-    String valor,
-  ) {
+  Widget linha(String nome, String valor) {
     return Padding(
-      padding:
-          const EdgeInsets.symmetric(
-        vertical: 4,
-      ),
+      padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
         children: [
-          Expanded(
-            child: Text(
-              titulo,
-            ),
-          ),
-          const SizedBox(
-            width: 8,
-          ),
+          Expanded(child: Text(nome)),
           Text(
             valor,
-            style:
-                const TextStyle(
-              fontWeight:
-                  FontWeight.bold,
+            style: const TextStyle(
+              fontWeight: FontWeight.bold,
             ),
           ),
         ],
@@ -1998,421 +1236,241 @@ class _HomePageState
     );
   }
 
-  Color corStatus(
-    ResultadoFatura r,
-  ) {
-    if (r.conciliada) {
-      return Colors.green;
-    }
-
-    if (r.falhaLeitura) {
-      return Colors.red;
-    }
-
+  Color cor(ResultadoFatura r) {
+    if (r.conciliada) return Colors.green;
+    if (r.falhaLeitura) return Colors.red;
     return Colors.orange;
   }
 
-  IconData iconeStatus(
-    ResultadoFatura r,
-  ) {
-    if (r.conciliada) {
-      return Icons.check_circle;
-    }
-
-    if (r.falhaLeitura) {
-      return Icons.error;
-    }
-
-    return Icons.warning_amber;
-  }
-
-  // ----------------------------------------------------------
-  // INTERFACE
-  // ----------------------------------------------------------
-
   @override
-  Widget build(
-    BuildContext context,
-  ) {
+  Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text(
-          'Conferidor de Faturas',
-        ),
+        title: const Text('Conferidor de Faturas'),
       ),
       body: ListView(
-        padding:
-            const EdgeInsets.all(20),
+        padding: const EdgeInsets.all(20),
         children: [
-          const Icon(
-            Icons.credit_card,
-            size: 65,
-          ),
-
-          const SizedBox(
-            height: 18,
-          ),
-
           FilledButton.icon(
             onPressed:
-                processando
-                    ? null
-                    : selecionarFaturas,
-            icon: const Icon(
-              Icons.picture_as_pdf,
-            ),
+                processando ? null : selecionarFaturas,
+            icon: const Icon(Icons.picture_as_pdf),
             label: const Text(
               'Selecionar faturas PDF',
             ),
           ),
 
-          const SizedBox(
-            height: 16,
-          ),
+          const SizedBox(height: 15),
 
           if (processando)
-            const Center(
-              child:
-                  CircularProgressIndicator(),
-            ),
+            const LinearProgressIndicator(),
 
           Card(
             child: Padding(
-              padding:
-                  const EdgeInsets.all(
-                16,
-              ),
-              child: Text(
-                status,
-              ),
+              padding: const EdgeInsets.all(16),
+              child: Text(status),
             ),
           ),
 
           if (faturas.isNotEmpty) ...[
-            const SizedBox(
-              height: 20,
-            ),
-
-            const Text(
-              'Resumo consolidado',
-              style: TextStyle(
-                fontSize: 22,
-                fontWeight:
-                    FontWeight.bold,
-              ),
-            ),
-
-            const SizedBox(
-              height: 10,
-            ),
+            const SizedBox(height: 15),
 
             Card(
               child: Padding(
-                padding:
-                    const EdgeInsets.all(
-                  16,
-                ),
+                padding: const EdgeInsets.all(16),
                 child: Column(
                   children: [
-                    linhaResumo(
-                      'Faturas processadas',
+                    linha(
+                      'Faturas',
                       '${faturas.length}',
                     ),
-
-                    linhaResumo(
+                    linha(
                       'Conciliadas',
                       '$quantidadeConciliadas',
                     ),
-
-                    linhaResumo(
+                    linha(
+                      'Incompletas',
+                      '$quantidadeIncompletas',
+                    ),
+                    linha(
                       'Divergentes',
                       '$quantidadeDivergentes',
                     ),
-
-                    linhaResumo(
-                      'Falhas de leitura',
+                    linha(
+                      'Falhas',
                       '$quantidadeFalhas',
                     ),
-
                     const Divider(),
-
-                    linhaResumo(
+                    linha(
                       'Total das faturas',
-                      dinheiro(
-                        valorTotalFaturas,
-                      ),
+                      dinheiro(valorTotalFaturas),
                     ),
-
-                    linhaResumo(
+                    linha(
                       'Soma dos lançamentos',
-                      dinheiro(
-                        somaTotalLancamentos,
-                      ),
+                      dinheiro(somaTotalLancamentos),
                     ),
-
-                    linhaResumo(
-                      'Diferença consolidada',
-                      dinheiro(
-                        diferencaTotal,
-                      ),
-                    ),
-
-                    linhaResumo(
+                    linha(
                       'Lançamentos',
                       '$totalLancamentos',
                     ),
-
-                    linhaResumo(
+                    linha(
                       'Compras parceladas',
                       '$totalParceladas',
-                    ),
-
-                    const SizedBox(
-                      height: 10,
-                    ),
-
-                    Row(
-                      children: [
-                        Icon(
-                          todasConciliadas
-                              ? Icons
-                                  .check_circle
-                              : Icons
-                                  .warning_amber,
-                          color:
-                              todasConciliadas
-                                  ? Colors.green
-                                  : Colors.orange,
-                        ),
-
-                        const SizedBox(
-                          width: 8,
-                        ),
-
-                        Expanded(
-                          child: Text(
-                            todasConciliadas
-                                ? 'Todas as faturas estão conciliadas'
-                                : 'Existem faturas que precisam de revisão',
-                            style:
-                                const TextStyle(
-                              fontWeight:
-                                  FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                      ],
                     ),
                   ],
                 ),
               ),
             ),
 
-            const SizedBox(
-              height: 16,
-            ),
+            const SizedBox(height: 15),
 
             FilledButton.icon(
               onPressed:
-                  todasConciliadas &&
-                          !gerandoExcel
-                      ? gerarExcelConsolidado
+                  todasConciliadas && !gerandoExcel
+                      ? gerarExcel
                       : null,
-              icon: gerandoExcel
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child:
-                          CircularProgressIndicator(
-                        strokeWidth: 2,
-                      ),
-                    )
-                  : const Icon(
-                      Icons.table_view,
-                    ),
-              label: Text(
-                gerandoExcel
-                    ? 'Gerando Excel...'
-                    : 'Gerar Excel consolidado',
+              icon: const Icon(Icons.table_view),
+              label: const Text(
+                'Gerar Excel consolidado',
               ),
             ),
 
-            if (!todasConciliadas)
-              const Padding(
-                padding:
-                    EdgeInsets.only(
-                  top: 8,
-                ),
-                child: Text(
-                  'O Excel será liberado somente '
-                  'quando cada fatura individualmente '
-                  'estiver com diferença de R\$ 0,00.',
-                  textAlign:
-                      TextAlign.center,
-                ),
-              ),
-
-            const SizedBox(
-              height: 28,
-            ),
+            const SizedBox(height: 25),
 
             const Text(
               'Conferência por fatura',
               style: TextStyle(
-                fontSize: 20,
-                fontWeight:
-                    FontWeight.bold,
+                fontSize: 22,
+                fontWeight: FontWeight.bold,
               ),
             ),
 
-            const SizedBox(
-              height: 8,
-            ),
+            ...faturas.map((fatura) {
+              final r = fatura.resultado;
 
-            ...faturas.map(
-              (fatura) {
-                final r =
-                    fatura.resultado;
+              return Card(
+                margin:
+                    const EdgeInsets.symmetric(vertical: 8),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment:
+                        CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        fatura.arquivo,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
 
-                return Card(
-                  child: Padding(
-                    padding:
-                        const EdgeInsets.all(
-                      16,
-                    ),
-                    child: Column(
-                      crossAxisAlignment:
-                          CrossAxisAlignment
-                              .start,
-                      children: [
+                      if (r.vencimento.isNotEmpty)
                         Text(
-                          fatura.arquivo,
-                          style:
-                              const TextStyle(
-                            fontWeight:
-                                FontWeight.bold,
-                          ),
+                          'Vencimento: ${r.vencimento}',
                         ),
 
-                        if (r.vencimento
-                            .isNotEmpty)
+                      const SizedBox(height: 12),
+
+                      linha(
+                        'Total da fatura',
+                        r.totalFatura == null
+                            ? 'Não identificado'
+                            : dinheiro(r.totalFatura!),
+                      ),
+
+                      linha(
+                        'Subtotal cartão',
+                        r.totalCartaoInformado == null
+                            ? 'Não identificado'
+                            : dinheiro(
+                                r.totalCartaoInformado!,
+                              ),
+                      ),
+
+                      linha(
+                        'Compras reconstruídas',
+                        dinheiro(r.somaCompras),
+                      ),
+
+                      linha(
+                        'Diferença do cartão',
+                        r.diferencaCartao == null
+                            ? 'Não calculada'
+                            : dinheiro(
+                                r.diferencaCartao!,
+                              ),
+                      ),
+
+                      const Divider(),
+
+                      linha(
+                        'Soma geral',
+                        dinheiro(r.soma),
+                      ),
+
+                      linha(
+                        'Diferença geral',
+                        r.diferenca == null
+                            ? 'Não calculada'
+                            : dinheiro(r.diferenca!),
+                      ),
+
+                      linha(
+                        'Lançamentos',
+                        '${r.lancamentos.length}',
+                      ),
+
+                      linha(
+                        'Compras individuais',
+                        '${r.compras.length}',
+                      ),
+
+                      linha(
+                        'Parceladas',
+                        '${r.quantidadeParceladas}',
+                      ),
+
+                      const SizedBox(height: 10),
+
+                      Row(
+                        children: [
+                          Icon(
+                            r.conciliada
+                                ? Icons.check_circle
+                                : r.falhaLeitura
+                                    ? Icons.error
+                                    : Icons.warning_amber,
+                            color: cor(r),
+                          ),
+                          const SizedBox(width: 8),
                           Text(
-                            'Vencimento: '
-                            '${r.vencimento}',
-                          ),
-
-                        if (r.cartao
-                            .isNotEmpty)
-                          Text(
-                            'Cartão: '
-                            '${r.cartao}',
-                          ),
-
-                        const SizedBox(
-                          height: 10,
-                        ),
-
-                        linhaResumo(
-                          'Total da fatura',
-                          r.totalFatura ==
-                                  null
-                              ? 'Não identificado'
-                              : dinheiro(
-                                  r.totalFatura!,
-                                ),
-                        ),
-
-                        linhaResumo(
-                          'Soma dos lançamentos',
-                          dinheiro(
-                            r.soma,
-                          ),
-                        ),
-
-                        linhaResumo(
-                          'Diferença',
-                          r.diferenca ==
-                                  null
-                              ? 'Não calculada'
-                              : dinheiro(
-                                  r.diferenca!,
-                                ),
-                        ),
-
-                        linhaResumo(
-                          'Lançamentos',
-                          '${r.lancamentos.length}',
-                        ),
-
-                        linhaResumo(
-                          'Parceladas',
-                          '${r.quantidadeParceladas}',
-                        ),
-
-                        const SizedBox(
-                          height: 8,
-                        ),
-
-                        Row(
-                          children: [
-                            Icon(
-                              iconeStatus(r),
-                              color:
-                                  corStatus(r),
-                            ),
-
-                            const SizedBox(
-                              width: 8,
-                            ),
-
-                            Text(
-                              r.status,
-                              style:
-                                  TextStyle(
-                                fontWeight:
-                                    FontWeight.bold,
-                                color:
-                                    corStatus(r),
-                              ),
-                            ),
-                          ],
-                        ),
-
-                        if (r.alertas
-                            .isNotEmpty) ...[
-                          const SizedBox(
-                            height: 10,
-                          ),
-
-                          ...r.alertas.map(
-                            (alerta) =>
-                                Padding(
-                              padding:
-                                  const EdgeInsets
-                                      .only(
-                                bottom: 4,
-                              ),
-                              child: Text(
-                                '• $alerta',
-                                style:
-                                    const TextStyle(
-                                  fontSize: 13,
-                                ),
-                              ),
+                            r.status,
+                            style: TextStyle(
+                              color: cor(r),
+                              fontWeight: FontWeight.bold,
                             ),
                           ),
                         ],
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
-          ],
+                      ),
 
-          const SizedBox(
-            height: 40,
-          ),
+                      if (r.alertas.isNotEmpty) ...[
+                        const SizedBox(height: 10),
+                        ...r.alertas.map(
+                          (a) => Padding(
+                            padding:
+                                const EdgeInsets.only(
+                              bottom: 4,
+                            ),
+                            child: Text('• $a'),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              );
+            }),
+          ],
         ],
       ),
     );
