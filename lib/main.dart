@@ -119,41 +119,38 @@ class ParserItau {
 
   static double moedaParaDouble(String valor) {
     var t = valor.replaceAll('R\$', '').replaceAll(' ', '').trim();
-    var negativo = false;
-    if (t.startsWith('-')) {
-      negativo = true;
-      t = t.substring(1);
-    }
+    final negativo = t.startsWith('-');
+    if (negativo) t = t.substring(1);
     t = t.replaceAll('.', '').replaceAll(',', '.');
     final n = double.tryParse(t) ?? 0.0;
     return negativo ? -n : n;
   }
 
   static String normalizarCategoria(String categoria) {
-    final c = semAcentos(categoria).toLowerCase();
-    switch (c) {
-      case 'vestuario':
-        return 'vestuário';
-      case 'saude':
-      case 'health':
-        return 'saúde';
-      case 'servicos':
-      case 'money':
-        return 'serviços';
-      case 'eletronicos':
-        return 'eletrônicos';
-      case 'supermarket':
-        return 'supermercado';
-      default:
-        return c;
-    }
+    final c = semAcentos(categoria).toLowerCase().trim();
+    const mapa = <String, String>{
+      'vestuario': 'vestuário',
+      'saude': 'saúde',
+      'servicos': 'serviços',
+      'eletronicos': 'eletrônicos',
+      'supermarket': 'supermercado',
+      'health': 'saúde',
+      'money': 'serviços',
+    };
+    return mapa[c] ?? c;
+  }
+
+  static bool dataValida(String data) {
+    final p = data.split('/');
+    if (p.length != 2) return false;
+    final d = int.tryParse(p[0]);
+    final m = int.tryParse(p[1]);
+    return d != null && m != null && d >= 1 && d <= 31 && m >= 1 && m <= 12;
   }
 
   static double? procurarTotalFatura(String texto) {
     final c = compactar(texto);
-    final m = RegExp(
-      r'totaldestafatura(?:r\$)?(-?[\d\.]+,\d{2})',
-    ).firstMatch(c);
+    final m = RegExp(r'totaldestafatura(?:r\$)?(-?[\d\.]+,\d{2})').firstMatch(c);
     return m == null ? null : moedaParaDouble(m.group(1)!);
   }
 
@@ -171,359 +168,286 @@ class ParserItau {
   }
 
   static String procurarVencimento(String texto) {
+    final linhas = texto.replaceAll('\r', '').split('\n');
+    for (final linha in linhas) {
+      final m = RegExp(r'Vencimento:\s*(\d{2}/\d{2}/\d{4})',
+              caseSensitive: false)
+          .firstMatch(linha);
+      if (m != null) return m.group(1)!;
+    }
     final c = compactar(texto);
-    final m = RegExp(r'vencimento:?(\d{2}/\d{2}/\d{4})').firstMatch(c);
-    return m?.group(1) ?? '';
+    return RegExp(r'vencimento:?(\d{2}/\d{2}/\d{4})')
+            .firstMatch(c)
+            ?.group(1) ??
+        '';
   }
 
   static String procurarCartao(String texto) {
-    final m = RegExp(
-      r'Cart[aã]o\s+([Xx\d\.\s]{4,})',
-      caseSensitive: false,
-    ).firstMatch(texto);
+    final m = RegExp(r'Cart[aã]o\s+([Xx\d\.\s]{4,})',
+            caseSensitive: false)
+        .firstMatch(texto);
     return limparEspacos(m?.group(1) ?? '');
   }
 
-  static const categorias = <String>[
+  static const categoriasConhecidas = <String>[
     'restaurante',
     'supermercado',
     'vestuario',
+    'vestuário',
     'saude',
+    'saúde',
     'servicos',
+    'serviços',
     'outros',
     'lazer',
     'eletronicos',
+    'eletrônicos',
     'hotel',
+    'transporte',
+    'automobile',
     'health',
     'money',
     'supermarket',
   ];
 
-  static String categoriaNoTrecho(String trecho) {
-    final c = compactar(trecho);
-    for (final cat in categorias) {
-      if (c.contains(cat)) return normalizarCategoria(cat);
+  static String categoriaDaLinhaSeguinte(String linha) {
+    final l = limparEspacos(linha);
+    if (l.isEmpty) return '';
+    final primeiro = l.split(' ').first;
+    final p = semAcentos(primeiro).toLowerCase();
+    for (final cat in categoriasConhecidas) {
+      if (p == semAcentos(cat).toLowerCase()) {
+        return normalizarCategoria(primeiro);
+      }
     }
     return '';
   }
 
-  static bool dataValida(String data) {
-    final p = data.split('/');
-    if (p.length != 2) return false;
-    final d = int.tryParse(p[0]);
-    final m = int.tryParse(p[1]);
-    return d != null && m != null && d >= 1 && d <= 31 && m >= 1 && m <= 12;
+  static bool linhaEhCabecalhoOuTotal(String linha) {
+    final c = compactar(linha);
+    return c.contains('dataestabelecimentovaloremr') ||
+        c.contains('lancamentosnocartao') ||
+        c.contains('totaldoslancamentos') ||
+        c.contains('proximafatura') ||
+        c.contains('demaisfaturas') ||
+        c.contains('limitesdecredito');
   }
 
-  static List<Lancamento> lerComprasOriginal(String texto) {
+  // Parser v4: o layoutText do Syncfusion preserva os lançamentos do Itaú
+  // como linhas. Cada compra válida começa por DD/MM e termina em valor.
+  // Isso evita fundir 2 ou 3 compras que aparecem próximas no PDF.
+  static List<Lancamento> lerComprasPorLinhas(String texto) {
+    final linhas = texto.replaceAll('\r', '').split('\n');
     final resultado = <Lancamento>[];
-    final achatado = texto.replaceAll('\r', '').replaceAll('\n', '');
+    bool dentro = false;
 
-    var inicio = achatado.indexOf('Lançamentos: compras e saques');
-    var fim = achatado.indexOf('Lançamentos no cartão');
-
-    if (inicio < 0 || fim <= inicio) return resultado;
-
-    var secao = achatado.substring(inicio, fim)
-      ..replaceAll('continua...', '');
-
-    final cats =
-        r'(restaurante|supermercado|vestuário|vestuario|saúde|saude|'
-        r'serviços|servicos|outros|lazer|eletronicos|eletrônicos|hotel|'
-        r'health|money|supermarket)';
-
-    final regex = RegExp(
-      r'(\d{2}/\d{2})(.+?)(?:\s(\d{2})/(\d{2}))?'
-      r'(-?[\d\.]+,\d{2})' + cats,
+    final rx = RegExp(
+      r'^\s*(\d{2}/\d{2})\s+(.+?)\s+(-?[\d\.]+,\d{2})\s*$',
       caseSensitive: false,
     );
+    final rxParcelaFim = RegExp(r'\s+(\d{1,2})/(\d{1,2})\s*$');
 
-    for (final m in regex.allMatches(secao)) {
-      var descricao = limparEspacos(m.group(2) ?? '');
-      var atual = int.tryParse(m.group(3) ?? '');
-      var total = int.tryParse(m.group(4) ?? '');
+    for (var i = 0; i < linhas.length; i++) {
+      final linha = limparEspacos(linhas[i]);
+      final c = compactar(linha);
 
-      final parcelaDescricao =
-          RegExp(r'\s(\d{1,2})/(\d{1,2})$').firstMatch(descricao);
-      if (parcelaDescricao != null) {
-        atual = int.tryParse(parcelaDescricao.group(1)!);
-        total = int.tryParse(parcelaDescricao.group(2)!);
-        descricao = descricao.substring(0, parcelaDescricao.start).trim();
+      if (c.contains('lancamentos:comprasesaques') ||
+          c.contains('lancamentoscomprasesaques')) {
+        dentro = true;
+        continue;
+      }
+      if (!dentro) continue;
+
+      if (c.contains('lancamentosnocartao')) break;
+      if (linhaEhCabecalhoOuTotal(linha)) continue;
+
+      final m = rx.firstMatch(linha);
+      if (m == null) continue;
+
+      final data = m.group(1)!;
+      if (!dataValida(data)) continue;
+
+      var descricao = limparEspacos(m.group(2)!);
+      final valor = moedaParaDouble(m.group(3)!);
+
+      // Proteção contra números de resumo/limite capturados como compra.
+      if (valor.abs() > 50000) continue;
+
+      int? parcelaAtual;
+      int? totalParcelas;
+      final pm = rxParcelaFim.firstMatch(descricao);
+      if (pm != null) {
+        final pa = int.tryParse(pm.group(1)!);
+        final pt = int.tryParse(pm.group(2)!);
+        if (pa != null &&
+            pt != null &&
+            pa >= 1 &&
+            pt >= pa &&
+            pt <= 60) {
+          parcelaAtual = pa;
+          totalParcelas = pt;
+          descricao = limparEspacos(descricao.substring(0, pm.start));
+        }
       }
 
-      if (descricao.isEmpty || m.group(5) == null || m.group(6) == null) {
+      if (descricao.isEmpty) continue;
+      final descCompacta = compactar(descricao);
+      if (descCompacta.startsWith('pagamento') ||
+          descCompacta.contains('totaldospagamentos')) {
         continue;
+      }
+
+      var categoria = '';
+      if (i + 1 < linhas.length) {
+        categoria = categoriaDaLinhaSeguinte(linhas[i + 1]);
       }
 
       resultado.add(
         Lancamento(
-          data: m.group(1)!,
+          data: data,
           descricao: descricao,
-          categoria: normalizarCategoria(m.group(6)!),
-          valor: moedaParaDouble(m.group(5)!),
-          parcelaAtual: atual,
-          totalParcelas: total,
-          tipo: atual != null && total != null ? 'Parcelada' : 'À vista',
+          categoria: categoria.isEmpty ? 'outros' : categoria,
+          valor: valor,
+          parcelaAtual: parcelaAtual,
+          totalParcelas: totalParcelas,
+          tipo: parcelaAtual != null && totalParcelas != null
+              ? 'Parcelada'
+              : 'À vista',
+          observacoes: 'Parser v4 - linha preservada do PDF Itaú',
         ),
       );
     }
     return resultado;
   }
 
-  // Converte o PDF "letra por letra" em uma representação compacta.
-  // Em seguida o parser trabalha com as âncoras: data -> próxima data.
+  // Fallback para PDFs em que o layoutText não preserva linhas.
+  // Mantém a estratégia antiga, mas só é usada se ela conciliar melhor.
   static String reconstruirFragmentado(String texto) {
     var t = semAcentos(texto)
         .toLowerCase()
         .replaceAll('\r', ' ')
         .replaceAll('\n', ' ')
         .replaceAll('\u00A0', ' ');
-
-    // Datas/parcelas: "25 /04" -> "25/04", "04 /1 2" -> "04/12".
     t = t.replaceAll(RegExp(r'\s*/\s*'), '/');
     t = t.replaceAll(RegExp(r'\s*,\s*'), ',');
     t = t.replaceAll(RegExp(r'\s*\.\s*'), '.');
-
-    for (var i = 0; i < 8; i++) {
-      t = t.replaceAllMapped(
-        RegExp(r'(?<=/)(\d)\s+(\d)'),
-        (m) => '${m.group(1)}${m.group(2)}',
-      );
-      t = t.replaceAllMapped(
-        RegExp(r'(\d)\s+(\d)(?=/)'),
-        (m) => '${m.group(1)}${m.group(2)}',
-      );
-      t = t.replaceAllMapped(
-        RegExp(r'(?<=,)(\d)\s+(\d)'),
-        (m) => '${m.group(1)}${m.group(2)}',
-      );
-    }
-
     return limparEspacos(t);
   }
 
-  // Cria uma versão sem espaços para capturar valores fragmentados.
-  // Mantemos "/" e "," porque são essenciais para data/parcela/valor.
-  static String compactarSecao(String texto) =>
-      reconstruirFragmentado(texto).replaceAll(RegExp(r'\s+'), '');
+  static List<Lancamento> lerComprasFallback(String texto) {
+    final t = reconstruirFragmentado(texto);
+    final inicio = t.indexOf('lancamentos: compras e saques');
+    if (inicio < 0) return [];
+    final fim = t.indexOf('lancamentos no cartao', inicio);
+    if (fim <= inicio) return [];
 
-  // Corrige o caso típico do Itaú em que parcela e valor são colados:
-  // "samsung ... 01/2162,00" significa parcela 01/21 e valor R$ 62,00.
-  static Map<String, dynamic> separarParcelaEValorColados(String bloco) {
-    final m = RegExp(r'(\d{1,2})/(\d{2})(\d{1,6},\d{2})').firstMatch(bloco);
-    if (m == null) return {'bloco': bloco};
-
-    final atual = int.tryParse(m.group(1)!);
-    final total = int.tryParse(m.group(2)!);
-    if (atual == null || total == null || atual < 1 || total < atual || total > 48) {
-      return {'bloco': bloco};
-    }
-
-    final valor = m.group(3)!;
-    final corrigido = bloco.replaceRange(
-      m.start,
-      m.end,
-      '${m.group(1)}/${m.group(2)}#$valor',
-    );
-    return {
-      'bloco': corrigido,
-      'atual': atual,
-      'total': total,
-    };
-  }
-
-  static bool descricaoEhPagamento(String descricao) {
-    final d = compactar(descricao);
-    return d.contains('pagamentoviaconta') ||
-        d.contains('pagamentoefetuado') ||
-        d.contains('totaldospagamentos') ||
-        d.startsWith('pagamento');
-  }
-
-  static List<Lancamento> lerComprasFragmentadas(String texto) {
+    final secao = t.substring(inicio, fim);
+    final datas = RegExp(r'\d{2}/\d{2}').allMatches(secao)
+        .where((m) => dataValida(m.group(0)!))
+        .toList();
     final resultado = <Lancamento>[];
-    final c = compactarSecao(texto);
-
-    var inicio = c.indexOf('lancamentos:comprasesaques');
-    if (inicio < 0) inicio = c.indexOf('lancamentoscomprasesaques');
-    if (inicio < 0) return resultado;
-
-    final fins = <int>[];
-    for (final marcador in <String>[
-      'lancamentosnocartao',
-      'lancamentosinternacionais',
-      'lancamentos:produtoseservicos',
-      'lancamentosprodutoseservicos',
-      'comprasparceladas-proximasfaturas',
-      'comprasparceladasproximasfaturas',
-      'totaldoslancamentosatuais',
-    ]) {
-      final p = c.indexOf(marcador, inicio + 10);
-      if (p > inicio) fins.add(p);
-    }
-    if (fins.isEmpty) return resultado;
-    fins.sort();
-
-    var secao = c.substring(inicio, fins.first);
-    secao = secao
-        .replaceAll('lancamentos:comprasesaques', '')
-        .replaceAll('lancamentoscomprasesaques', '')
-        .replaceAll('dataestabelecimentovaloremr\$', '')
-        .replaceAll('dataestabelecimentovaloremr', '')
-        .replaceAll('continua...', '');
-
-    final candidatos = RegExp(r'\d{2}/\d{2}').allMatches(secao).toList();
-    final datas = candidatos.where((m) => dataValida(m.group(0) ?? '')).toList();
 
     for (var i = 0; i < datas.length; i++) {
       final dm = datas[i];
-      final data = dm.group(0)!;
-      final fimBloco = i + 1 < datas.length ? datas[i + 1].start : secao.length;
-      if (fimBloco <= dm.end) continue;
-
+      final fimBloco =
+          i + 1 < datas.length ? datas[i + 1].start : secao.length;
       var bloco = secao.substring(dm.end, fimBloco);
 
-      // Primeiro trata parcela colada ao valor: 01/2162,00 -> 01/21 + 62,00.
-      final separado = separarParcelaEValorColados(bloco);
-      bloco = separado['bloco'] as String;
-      int? parcelaAtual = separado['atual'] as int?;
-      int? totalParcelas = separado['total'] as int?;
-
+      // Exige que o bloco tenha um valor monetário plausível.
       final valores = RegExp(r'-?\d[\d\.]*,\d{2}').allMatches(bloco).toList();
       if (valores.isEmpty) continue;
-
       final vm = valores.last;
-      final valorTexto = vm.group(0)!;
-      var antes = bloco.substring(0, vm.start).replaceAll('#', '');
-      final depois = bloco.substring(vm.end);
-
-      if (parcelaAtual == null || totalParcelas == null) {
-        final parcelas = RegExp(r'(\d{1,2})/(\d{1,2})').allMatches(antes).toList();
-        if (parcelas.isNotEmpty) {
-          final pm = parcelas.last;
-          final pa = int.tryParse(pm.group(1) ?? '');
-          final pt = int.tryParse(pm.group(2) ?? '');
-          if (pa != null && pt != null && pa >= 1 && pt >= pa && pt <= 48) {
-            parcelaAtual = pa;
-            totalParcelas = pt;
-            antes = antes.replaceRange(pm.start, pm.end, '');
-          }
-        }
-      } else {
-        antes = antes.replaceAll(RegExp(r'\d{1,2}/\d{2}$'), '');
-      }
-
-      var categoria = categoriaNoTrecho(depois);
-      if (categoria.isEmpty) categoria = categoriaNoTrecho(antes);
-
-      var descricao = antes;
-      for (final cat in categorias) {
-        descricao = descricao.replaceAll(cat, '');
-      }
-      descricao = limparEspacos(descricao);
-
-      if (descricao.isEmpty || descricao.contains('totaldoslancamentos')) continue;
-      if (descricaoEhPagamento(descricao)) continue;
-
-      final valor = moedaParaDouble(valorTexto);
-
-      // Um lançamento individual maior que R$ 50 mil nesta seção é quase
-      // certamente concatenação indevida de fragmentos do PDF. Não tentamos
-      // adivinhar o valor: descartamos e deixamos a conciliação apontar a falta.
+      final valor = moedaParaDouble(vm.group(0)!);
       if (valor.abs() > 50000) continue;
+
+      var antes = limparEspacos(bloco.substring(0, vm.start));
+      int? pa;
+      int? pt;
+      final parcelas = RegExp(r'(\d{1,2})/(\d{1,2})\s*$').firstMatch(antes);
+      if (parcelas != null) {
+        final a = int.tryParse(parcelas.group(1)!);
+        final b = int.tryParse(parcelas.group(2)!);
+        if (a != null && b != null && a >= 1 && b >= a && b <= 60) {
+          pa = a;
+          pt = b;
+          antes = limparEspacos(antes.substring(0, parcelas.start));
+        }
+      }
+      if (antes.isEmpty || compactar(antes).startsWith('pagamento')) continue;
 
       resultado.add(
         Lancamento(
-          data: data,
-          descricao: descricao,
-          categoria: categoria,
+          data: dm.group(0)!,
+          descricao: antes,
+          categoria: 'outros',
           valor: valor,
-          parcelaAtual: parcelaAtual,
-          totalParcelas: totalParcelas,
-          tipo: parcelaAtual != null && totalParcelas != null ? 'Parcelada' : 'À vista',
-          observacoes: 'Reconstruído de PDF Itaú fragmentado',
+          parcelaAtual: pa,
+          totalParcelas: pt,
+          tipo: pa != null && pt != null ? 'Parcelada' : 'À vista',
+          observacoes: 'Parser v4 - fallback',
         ),
       );
     }
-
-    final unicos = <Lancamento>[];
-    final chaves = <String>{};
-    for (final item in resultado) {
-      final chave = '${item.data}|${compactar(item.descricao)}|${item.valor.toStringAsFixed(2)}|${item.parcelaAtual ?? ''}|${item.totalParcelas ?? ''}';
-      if (chaves.add(chave)) unicos.add(item);
-    }
-    return unicos;
+    return resultado;
   }
 
   static List<Lancamento> lerCompras(String texto, double? totalCartao) {
-    final original = lerComprasOriginal(texto);
-    final fragmentado = lerComprasFragmentadas(texto);
+    final porLinhas = lerComprasPorLinhas(texto);
+    final fallback = lerComprasFallback(texto);
 
     if (totalCartao == null) {
-      return fragmentado.length > original.length ? fragmentado : original;
+      return porLinhas.length >= fallback.length ? porLinhas : fallback;
     }
 
-    double erro(List<Lancamento> lista) {
-      final soma = lista.fold<double>(0, (s, e) => s + e.valor);
-      return (totalCartao - soma).abs();
-    }
+    double erro(List<Lancamento> l) =>
+        (totalCartao - l.fold<double>(0, (s, e) => s + e.valor)).abs();
 
-    if (original.isNotEmpty && erro(original) < 0.02) return original;
-    if (fragmentado.isNotEmpty && erro(fragmentado) < 0.02) {
-      return fragmentado;
-    }
-
-    if (original.isEmpty) return fragmentado;
-    if (fragmentado.isEmpty) return original;
-
-    return erro(fragmentado) < erro(original) ? fragmentado : original;
+    if (porLinhas.isNotEmpty && erro(porLinhas) < 0.02) return porLinhas;
+    if (fallback.isNotEmpty && erro(fallback) < 0.02) return fallback;
+    if (porLinhas.isEmpty) return fallback;
+    if (fallback.isEmpty) return porLinhas;
+    return erro(porLinhas) <= erro(fallback) ? porLinhas : fallback;
   }
 
   static List<Lancamento> lerInternacional(String texto) {
     final resultado = <Lancamento>[];
 
-    final compra = procurarSubtotal(
+    final transacoes = procurarSubtotal(
       texto,
       const [
         'Total transações inter. em R\$',
         'Total transacoes inter. em R\$',
       ],
     );
-
     final iof = procurarSubtotal(
       texto,
-      const [
-        'Repasse de IOF em R\$',
-        'Repasse de IOF',
-      ],
+      const ['Repasse de IOF em R\$', 'Repasse de IOF'],
     );
 
-    if (compra != null && compra.abs() > 0.001) {
+    if (transacoes != null && transacoes.abs() > 0.001) {
       resultado.add(
         Lancamento(
           data: '',
-          descricao: 'Compra internacional',
+          descricao: 'Transações internacionais',
           categoria: 'internacional',
-          valor: compra,
+          valor: transacoes,
           tipo: 'Internacional',
-          observacoes: 'Total das transações internacionais da fatura',
+          observacoes: 'Subtotal informado pelo Itaú',
         ),
       );
     }
-
     if (iof != null && iof.abs() > 0.001) {
       resultado.add(
         Lancamento(
           data: '',
-          descricao: 'Repasse de IOF - transação internacional',
+          descricao: 'Repasse de IOF - transações internacionais',
           categoria: 'encargos',
           valor: iof,
           tipo: 'Encargo / IOF',
-          observacoes: 'IOF das transações internacionais',
+          observacoes: 'IOF informado pelo Itaú',
         ),
       );
     }
-
     return resultado;
   }
 
@@ -531,51 +455,53 @@ class ParserItau {
     String texto,
     double? totalServicos,
   ) {
-    final resultado = <Lancamento>[];
-    final achatado = texto.replaceAll('\r', '').replaceAll('\n', '');
+    final linhas = texto.replaceAll('\r', '').split('\n');
+    final itens = <Lancamento>[];
+    bool dentro = false;
+    final rx = RegExp(
+      r'^\s*(\d{2}/\d{2})\s+(.+?)\s+(-?[\d\.]+,\d{2})\s*$',
+      caseSensitive: false,
+    );
 
-    var inicio = achatado.indexOf('Lançamentos: produtos e serviços');
-    var fim = achatado.indexOf('Total dos lançamentos atuais');
+    for (final original in linhas) {
+      final linha = limparEspacos(original);
+      final c = compactar(linha);
 
-    if (inicio >= 0 && fim > inicio) {
-      final secao = achatado.substring(inicio, fim);
-      final datas = RegExp(r'\d{2}/\d{2}').allMatches(secao).toList();
-
-      for (var i = 0; i < datas.length; i++) {
-        final atual = datas[i];
-        final fimBloco =
-            i + 1 < datas.length ? datas[i + 1].start : secao.length;
-        var bloco = secao.substring(atual.start, fimBloco);
-        if (bloco.length < 5) continue;
-
-        final data = bloco.substring(0, 5);
-        bloco = bloco.substring(5);
-
-        final vm = RegExp(r'(-?[\d\.]+,\d{2})').firstMatch(bloco);
-        if (vm == null) continue;
-
-        var descricao = limparEspacos(bloco.substring(0, vm.start));
-        if (descricao.isEmpty) descricao = 'Produto/serviço Itaú';
-
-        resultado.add(
-          Lancamento(
-            data: data,
-            descricao: descricao,
-            categoria: 'produtos e serviços',
-            valor: moedaParaDouble(vm.group(1)!),
-            tipo: 'Produto/Serviço',
-          ),
-        );
+      if (c.contains('lancamentos:produtoseservicos') ||
+          c.contains('lancamentosprodutoseservicos')) {
+        dentro = true;
+        continue;
       }
+      if (!dentro) continue;
+      if (c.contains('totaldoslancamentosatuais')) break;
+
+      final m = rx.firstMatch(linha);
+      if (m == null || !dataValida(m.group(1)!)) continue;
+      final desc = limparEspacos(m.group(2)!);
+      final valor = moedaParaDouble(m.group(3)!);
+      if (desc.isEmpty || valor.abs() > 50000) continue;
+
+      itens.add(
+        Lancamento(
+          data: m.group(1)!,
+          descricao: desc,
+          categoria: 'produtos e serviços',
+          valor: valor,
+          tipo: 'Produto/Serviço',
+          observacoes: 'Parser v4 - item de produtos/serviços',
+        ),
+      );
     }
 
-    // Se os itens individuais não puderam ser lidos, não inventamos
-    // descrições. O subtotal líquido pode ser usado como lançamento
-    // apenas para representar fielmente a seção da própria fatura.
-    if (resultado.isEmpty &&
-        totalServicos != null &&
-        totalServicos.abs() > 0.001) {
-      resultado.add(
+    final soma = itens.fold<double>(0, (s, e) => s + e.valor);
+    if (totalServicos != null && (totalServicos - soma).abs() < 0.02) {
+      return itens;
+    }
+
+    // Se a leitura individual ficou incompleta, usa o subtotal oficial
+    // para não inventar itens nem comprometer a conciliação.
+    if (totalServicos != null && totalServicos.abs() > 0.001) {
+      return [
         Lancamento(
           data: '',
           descricao: 'Subtotal produtos e serviços',
@@ -583,12 +509,29 @@ class ParserItau {
           valor: totalServicos,
           tipo: 'Produto/Serviço',
           observacoes:
-              'Itens individuais não legíveis; valor é o subtotal informado pelo Itaú',
+              'Subtotal oficial usado porque os itens individuais não fecharam',
         ),
-      );
+      ];
     }
+    return itens;
+  }
 
-    return resultado;
+  static List<Lancamento> lerEncargos(String texto) {
+    final total = procurarSubtotal(
+      texto,
+      const ['Total de encargos em R\$', 'Total de encargos em R$'],
+    );
+    if (total == null || total.abs() < 0.001) return [];
+    return [
+      Lancamento(
+        data: '',
+        descricao: 'Encargos cobrados nesta fatura',
+        categoria: 'encargos',
+        valor: total,
+        tipo: 'Encargo financeiro',
+        observacoes: 'Total de encargos informado pelo Itaú',
+      ),
+    ];
   }
 
   static ResultadoFatura processar(String texto) {
@@ -617,19 +560,19 @@ class ParserItau {
     final compras = lerCompras(texto, totalCartao);
     final internacional = lerInternacional(texto);
     final produtos = lerProdutosServicos(texto, totalServicos);
+    final encargos = lerEncargos(texto);
 
     final lancamentos = <Lancamento>[
       ...compras,
       ...internacional,
       ...produtos,
+      ...encargos,
     ];
 
     final somaCompras = compras.fold<double>(0, (s, e) => s + e.valor);
-
     if (compras.isEmpty) {
       alertas.add('Nenhuma compra individual foi reconstruída.');
     }
-
     if (totalCartao != null) {
       final dif = totalCartao - somaCompras;
       if (dif.abs() >= 0.02) {
@@ -641,7 +584,6 @@ class ParserItau {
     }
 
     final somaFinal = lancamentos.fold<double>(0, (s, e) => s + e.valor);
-
     if (totalFatura == null) {
       alertas.add('Total da fatura não identificado.');
     } else {
@@ -834,7 +776,7 @@ class _HomePageState extends State<HomePage> {
     final b = StringBuffer();
 
     b.writeln('DIAGNÓSTICO - CONFERIDOR DE FATURAS ITAÚ');
-    b.writeln('Parser: v3 - layoutText + proteção numérica + parcelas');
+    b.writeln('Parser: v4 - leitura por linhas + seções + encargos');
     b.writeln('Arquivo: ${fatura.arquivo}');
     b.writeln('Status: ${r.status}');
     b.writeln('Vencimento: ${r.vencimento}');
