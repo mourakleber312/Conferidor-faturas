@@ -1356,12 +1356,14 @@ class _HomePageState extends State<HomePage> {
           FaturaProcessada(
             arquivo: arquivo.name,
             resultado: resultado,
+            textoBruto: texto,
           ),
         );
       } catch (e) {
         faturas.add(
           FaturaProcessada(
             arquivo: arquivo.name,
+            textoBruto: '',
             resultado: ResultadoFatura(
               totalFatura: null,
               lancamentos: const [],
@@ -1388,6 +1390,178 @@ class _HomePageState extends State<HomePage> {
           '$quantidadeFalhas falha(s).';
     });
   }
+  Future<void> gerarDiagnostico() async {
+  if (faturas.isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Selecione pelo menos uma fatura primeiro.'),
+      ),
+    );
+    return;
+  }
+
+  try {
+    final buffer = StringBuffer();
+
+    buffer.writeln('DIAGNÓSTICO - CONFERIDOR DE FATURAS ITAÚ');
+    buffer.writeln(
+      'Gerado em: ${DateTime.now().toString()}',
+    );
+    buffer.writeln('');
+    buffer.writeln(
+      'Quantidade de faturas: ${faturas.length}',
+    );
+    buffer.writeln('');
+
+    for (int i = 0; i < faturas.length; i++) {
+      final fatura = faturas[i];
+      final r = fatura.resultado;
+
+      buffer.writeln(
+        '==================================================',
+      );
+      buffer.writeln(
+        'FATURA ${i + 1}: ${fatura.arquivo}',
+      );
+      buffer.writeln(
+        '==================================================',
+      );
+
+      buffer.writeln(
+        'Status: ${r.status}',
+      );
+
+      buffer.writeln(
+        'Vencimento: ${r.vencimento}',
+      );
+
+      buffer.writeln(
+        'Total da fatura: ${r.totalFatura}',
+      );
+
+      buffer.writeln(
+        'Subtotal cartão informado: '
+        '${r.totalCartaoInformado}',
+      );
+
+      buffer.writeln(
+        'Subtotal internacional informado: '
+        '${r.totalInternacionalInformado}',
+      );
+
+      buffer.writeln(
+        'Subtotal produtos/serviços informado: '
+        '${r.totalServicosInformado}',
+      );
+
+      buffer.writeln(
+        'Soma compras reconstruídas: '
+        '${r.somaCompras.toStringAsFixed(2)}',
+      );
+
+      buffer.writeln(
+        'Diferença cartão: '
+        '${r.diferencaCartao?.toStringAsFixed(2)}',
+      );
+
+      buffer.writeln(
+        'Soma geral: '
+        '${r.soma.toStringAsFixed(2)}',
+      );
+
+      buffer.writeln(
+        'Diferença geral: '
+        '${r.diferenca?.toStringAsFixed(2)}',
+      );
+
+      buffer.writeln(
+        'Quantidade compras: ${r.compras.length}',
+      );
+
+      buffer.writeln(
+        'Quantidade lançamentos: '
+        '${r.lancamentos.length}',
+      );
+
+      buffer.writeln(
+        'Parceladas: ${r.quantidadeParceladas}',
+      );
+
+      buffer.writeln('');
+
+      if (r.alertas.isNotEmpty) {
+        buffer.writeln('ALERTAS:');
+
+        for (final alerta in r.alertas) {
+          buffer.writeln('- $alerta');
+        }
+
+        buffer.writeln('');
+      }
+
+      buffer.writeln(
+        '---------- COMPRAS RECONSTRUÍDAS ----------',
+      );
+
+      for (int j = 0; j < r.compras.length; j++) {
+        final item = r.compras[j];
+
+        buffer.writeln(
+          '${j + 1} | '
+          '${item.data} | '
+          '${item.descricao} | '
+          '${item.valor.toStringAsFixed(2)} | '
+          '${item.parcelaAtual ?? '-'}'
+          '/'
+          '${item.totalParcelas ?? '-'} | '
+          '${item.categoria}',
+        );
+      }
+
+      buffer.writeln('');
+      buffer.writeln(
+        '---------- TEXTO BRUTO DO PDF ----------',
+      );
+      buffer.writeln('');
+
+      buffer.writeln(fatura.textoBruto);
+
+      buffer.writeln('');
+      buffer.writeln('');
+    }
+
+    final pasta = await getTemporaryDirectory();
+
+    final arquivo = File(
+      '${pasta.path}/diagnostico_faturas_itau.txt',
+    );
+
+    await arquivo.writeAsString(
+      buffer.toString(),
+    );
+
+    await Share.shareXFiles(
+      [
+        XFile(
+          arquivo.path,
+          mimeType: 'text/plain',
+        ),
+      ],
+      text:
+          'Diagnóstico do Conferidor de Faturas Itaú',
+    );
+  } catch (e) {
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Erro ao gerar diagnóstico: $e',
+        ),
+      ),
+    );
+  }
+  
 
   Future<void> gerarExcel() async {
     if (!todasConciliadas) return;
@@ -1656,6 +1830,17 @@ class _HomePageState extends State<HomePage> {
                 'Gerar Excel consolidado',
               ),
             ),
+            const SizedBox(height: 10),
+
+OutlinedButton.icon(
+  onPressed: faturas.isEmpty
+      ? null
+      : gerarDiagnostico,
+  icon: const Icon(Icons.bug_report),
+  label: const Text(
+    'Gerar diagnóstico',
+  ),
+),
 
             const SizedBox(height: 25),
 
