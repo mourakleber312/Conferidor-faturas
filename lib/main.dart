@@ -1006,7 +1006,7 @@ class ParserItau {
       texto,
       const [
         'Total de encargos em R\$',
-        'Total de encargos em R\i$',
+        'Total de encargos em R\$',
         'Total de encargos',
       ],
     );
