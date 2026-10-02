@@ -307,6 +307,39 @@ class ParserItau {
   static String compactarSecao(String texto) =>
       reconstruirFragmentado(texto).replaceAll(RegExp(r'\s+'), '');
 
+  // Corrige o caso típico do Itaú em que parcela e valor são colados:
+  // "samsung ... 01/2162,00" significa parcela 01/21 e valor R$ 62,00.
+  static Map<String, dynamic> separarParcelaEValorColados(String bloco) {
+    final m = RegExp(r'(\d{1,2})/(\d{2})(\d{1,6},\d{2})').firstMatch(bloco);
+    if (m == null) return {'bloco': bloco};
+
+    final atual = int.tryParse(m.group(1)!);
+    final total = int.tryParse(m.group(2)!);
+    if (atual == null || total == null || atual < 1 || total < atual || total > 48) {
+      return {'bloco': bloco};
+    }
+
+    final valor = m.group(3)!;
+    final corrigido = bloco.replaceRange(
+      m.start,
+      m.end,
+      '${m.group(1)}/${m.group(2)}#$valor',
+    );
+    return {
+      'bloco': corrigido,
+      'atual': atual,
+      'total': total,
+    };
+  }
+
+  static bool descricaoEhPagamento(String descricao) {
+    final d = compactar(descricao);
+    return d.contains('pagamentoviaconta') ||
+        d.contains('pagamentoefetuado') ||
+        d.contains('totaldospagamentos') ||
+        d.startsWith('pagamento');
+  }
+
   static List<Lancamento> lerComprasFragmentadas(String texto) {
     final resultado = <Lancamento>[];
     final c = compactarSecao(texto);
@@ -339,53 +372,45 @@ class ParserItau {
         .replaceAll('dataestabelecimentovaloremr', '')
         .replaceAll('continua...', '');
 
-    // Uma data válida é usada como âncora. Parcelas com mês > 12
-    // não passam por dataValida e não viram início de lançamento.
     final candidatos = RegExp(r'\d{2}/\d{2}').allMatches(secao).toList();
-    final datas = candidatos
-        .where((m) => dataValida(m.group(0) ?? ''))
-        .toList();
+    final datas = candidatos.where((m) => dataValida(m.group(0) ?? '')).toList();
 
     for (var i = 0; i < datas.length; i++) {
       final dm = datas[i];
       final data = dm.group(0)!;
-      final fimBloco =
-          i + 1 < datas.length ? datas[i + 1].start : secao.length;
+      final fimBloco = i + 1 < datas.length ? datas[i + 1].start : secao.length;
       if (fimBloco <= dm.end) continue;
 
       var bloco = secao.substring(dm.end, fimBloco);
 
-      // Valor: último número com centavos do bloco.
-      final valores =
-          RegExp(r'-?\d[\d\.]*,\d{2}').allMatches(bloco).toList();
+      // Primeiro trata parcela colada ao valor: 01/2162,00 -> 01/21 + 62,00.
+      final separado = separarParcelaEValorColados(bloco);
+      bloco = separado['bloco'] as String;
+      int? parcelaAtual = separado['atual'] as int?;
+      int? totalParcelas = separado['total'] as int?;
+
+      final valores = RegExp(r'-?\d[\d\.]*,\d{2}').allMatches(bloco).toList();
       if (valores.isEmpty) continue;
 
       final vm = valores.last;
       final valorTexto = vm.group(0)!;
-      var antes = bloco.substring(0, vm.start);
+      var antes = bloco.substring(0, vm.start).replaceAll('#', '');
       final depois = bloco.substring(vm.end);
 
-      int? parcelaAtual;
-      int? totalParcelas;
-
-      final parcelas =
-          RegExp(r'(\d{1,2})/(\d{1,2})').allMatches(antes).toList();
-
-      // A parcela costuma ser o último xx/yy antes do valor.
-      if (parcelas.isNotEmpty) {
-        final pm = parcelas.last;
-        final pa = int.tryParse(pm.group(1) ?? '');
-        final pt = int.tryParse(pm.group(2) ?? '');
-
-        if (pa != null &&
-            pt != null &&
-            pa >= 1 &&
-            pt >= pa &&
-            pt <= 48) {
-          parcelaAtual = pa;
-          totalParcelas = pt;
-          antes = antes.replaceRange(pm.start, pm.end, '');
+      if (parcelaAtual == null || totalParcelas == null) {
+        final parcelas = RegExp(r'(\d{1,2})/(\d{1,2})').allMatches(antes).toList();
+        if (parcelas.isNotEmpty) {
+          final pm = parcelas.last;
+          final pa = int.tryParse(pm.group(1) ?? '');
+          final pt = int.tryParse(pm.group(2) ?? '');
+          if (pa != null && pt != null && pa >= 1 && pt >= pa && pt <= 48) {
+            parcelaAtual = pa;
+            totalParcelas = pt;
+            antes = antes.replaceRange(pm.start, pm.end, '');
+          }
         }
+      } else {
+        antes = antes.replaceAll(RegExp(r'\d{1,2}/\d{2}$'), '');
       }
 
       var categoria = categoriaNoTrecho(depois);
@@ -397,20 +422,25 @@ class ParserItau {
       }
       descricao = limparEspacos(descricao);
 
-      if (descricao.isEmpty) continue;
-      if (descricao.contains('totaldoslancamentos')) continue;
+      if (descricao.isEmpty || descricao.contains('totaldoslancamentos')) continue;
+      if (descricaoEhPagamento(descricao)) continue;
+
+      final valor = moedaParaDouble(valorTexto);
+
+      // Um lançamento individual maior que R$ 50 mil nesta seção é quase
+      // certamente concatenação indevida de fragmentos do PDF. Não tentamos
+      // adivinhar o valor: descartamos e deixamos a conciliação apontar a falta.
+      if (valor.abs() > 50000) continue;
 
       resultado.add(
         Lancamento(
           data: data,
           descricao: descricao,
           categoria: categoria,
-          valor: moedaParaDouble(valorTexto),
+          valor: valor,
           parcelaAtual: parcelaAtual,
           totalParcelas: totalParcelas,
-          tipo: parcelaAtual != null && totalParcelas != null
-              ? 'Parcelada'
-              : 'À vista',
+          tipo: parcelaAtual != null && totalParcelas != null ? 'Parcelada' : 'À vista',
           observacoes: 'Reconstruído de PDF Itaú fragmentado',
         ),
       );
@@ -419,10 +449,7 @@ class ParserItau {
     final unicos = <Lancamento>[];
     final chaves = <String>{};
     for (final item in resultado) {
-      final chave =
-          '${item.data}|${compactar(item.descricao)}|'
-          '${item.valor.toStringAsFixed(2)}|'
-          '${item.parcelaAtual ?? ''}|${item.totalParcelas ?? ''}';
+      final chave = '${item.data}|${compactar(item.descricao)}|${item.valor.toStringAsFixed(2)}|${item.parcelaAtual ?? ''}|${item.totalParcelas ?? ''}';
       if (chaves.add(chave)) unicos.add(item);
     }
     return unicos;
@@ -807,7 +834,7 @@ class _HomePageState extends State<HomePage> {
     final b = StringBuffer();
 
     b.writeln('DIAGNÓSTICO - CONFERIDOR DE FATURAS ITAÚ');
-    b.writeln('Parser: layoutText + fallback bruto');
+    b.writeln('Parser: v3 - layoutText + proteção numérica + parcelas');
     b.writeln('Arquivo: ${fatura.arquivo}');
     b.writeln('Status: ${r.status}');
     b.writeln('Vencimento: ${r.vencimento}');
