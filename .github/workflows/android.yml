@@ -1,10 +1,12 @@
-name: Gerar APK Android
+
+name: Gerar APK Android Beta
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
+    if: github.ref == 'refs/heads/Beta'
     runs-on: ubuntu-latest
 
     steps:
@@ -20,29 +22,79 @@ jobs:
       - name: Instalar Android SDK 36
         run: |
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
-          "platforms;android-36" \
-          "build-tools;36.0.0"
+            "platforms;android-36" \
+            "build-tools;36.0.0"
 
-      - name: Criar projeto Flutter Android
+      - name: Criar projeto Flutter Android Beta
         run: |
           flutter create \
             --platforms=android \
             --org br.com.conferidorfaturas \
             .
 
-      - name: Configurar compileSdk 36
+      - name: Configurar Android Beta
         run: |
-          sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 36/' android/app/build.gradle.kts
+          python3 - <<'PY'
+          from pathlib import Path
+
+          gradle = Path("android/app/build.gradle.kts")
+          text = gradle.read_text()
+
+          original_id = 'br.com.conferidorfaturas.conferidor_faturas'
+          beta_id = original_id + '.beta'
+
+          if f'applicationId = "{original_id}"' not in text:
+              raise SystemExit(
+                  "Application ID original nao encontrado. "
+                  "Compilacao interrompida para proteger a versao estavel."
+              )
+
+          text = text.replace(
+              f'applicationId = "{original_id}"',
+              f'applicationId = "{beta_id}"'
+          )
+
+          text = text.replace(
+              'compileSdk = flutter.compileSdkVersion',
+              'compileSdk = 36'
+          )
+
+          gradle.write_text(text)
+
+          manifest = Path(
+              "android/app/src/main/AndroidManifest.xml"
+          )
+          xml = manifest.read_text()
+
+          import re
+          xml, count = re.subn(
+              r'android:label="[^"]*"',
+              'android:label="Conferidor de Faturas Beta"',
+              xml,
+              count=1
+          )
+
+          if count != 1:
+              raise SystemExit(
+                  "Nome do aplicativo nao encontrado no Manifest."
+              )
+
+          manifest.write_text(xml)
+
+          print("Beta configurada:")
+          print("Application ID:", beta_id)
+          print("Nome: Conferidor de Faturas Beta")
+          PY
 
       - name: Baixar dependencias
         run: flutter pub get
 
-      - name: Gerar APK
+      - name: Gerar APK Beta
         run: flutter build apk --release
 
-      - name: Disponibilizar APK
+      - name: Disponibilizar APK Beta
         uses: actions/upload-artifact@v4
         with:
-          name: ConferidorFaturas-APK
+          name: ConferidorFaturas-Beta-APK
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
