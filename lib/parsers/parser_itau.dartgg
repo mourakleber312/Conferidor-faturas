@@ -1,4 +1,4 @@
-part of '../main.dart';
+ggpart of '../main.dart';
 
 class ParserItau {
   static int centavos(double valor) {
